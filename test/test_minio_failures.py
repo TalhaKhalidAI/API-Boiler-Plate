@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from App.services.minio_service import AsyncMinIOClient
+from App.storage.minio_storage import AsyncMinIOClient
 from App.core.exceptions import MinIOConnectionError, MinIOError
 
 pytestmark = pytest.mark.asyncio

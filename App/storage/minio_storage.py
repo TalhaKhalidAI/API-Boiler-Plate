@@ -418,4 +418,4 @@ class AsyncMinIOClient:
 # Singleton + FastAPI dependency
 # ---------------------------------------------------------------------------
 
-minio_service = AsyncMinIOClient()
+minio_storage = AsyncMinIOClient()

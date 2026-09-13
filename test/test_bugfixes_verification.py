@@ -121,9 +121,9 @@ class TestBug3MinioTLS:
         If this fails, cert_reqs=ssl.CERT_NONE is unconditional.
         Bug 3 NOT fixed — TLS verification is disabled even in HTTPS mode.
         """
-        from App.services import minio_service
+        from App.storage import minio_storage
 
-        source = inspect.getsource(minio_service)
+        source = inspect.getsource(minio_storage)
         assert "MINIO_SECURE" in source, (
             "minio_service.py does not reference MINIO_SECURE. "
             "cert_reqs is likely hardcoded to CERT_NONE. Bug 3 NOT fixed."
@@ -131,9 +131,9 @@ class TestBug3MinioTLS:
 
     def test_cert_required_branch_exists(self):
         """Confirms the CERT_REQUIRED branch exists in _build_client."""
-        from App.services import minio_service
+        from App.storage import minio_storage
 
-        source = inspect.getsource(minio_service)
+        source = inspect.getsource(minio_storage)
         assert "CERT_REQUIRED" in source, (
             "minio_service.py does not use ssl.CERT_REQUIRED anywhere. "
             "TLS verification is never enabled. Bug 3 NOT fixed."
@@ -148,7 +148,7 @@ class TestBug3MinioTLS:
         the PoolManager, not as a direct attribute. We inspect that dict.
         """
         from App.core import settings as settings_module
-        from App.services import minio_service as mod
+        from App.storage import minio_storage as mod
 
         monkeypatch.setattr(settings_module.settings, "MINIO_SECURE", True)
 
@@ -181,7 +181,7 @@ class TestBug3MinioTLS:
         With MINIO_SECURE=False, cert_reqs should be CERT_NONE.
         """
         from App.core import settings as settings_module
-        from App.services import minio_service as mod
+        from App.storage import minio_storage as mod
 
         monkeypatch.setattr(settings_module.settings, "MINIO_SECURE", False)
 
