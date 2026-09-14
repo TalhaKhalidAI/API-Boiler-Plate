@@ -19,7 +19,7 @@ async def create_admin():
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         
         admin_email = settings.ADMIN_EMAIL
-        admin_passwd_hash = get_password_hash(settings.ADMIN_PASSWORD)
+        admin_passwd_hash = get_password_hash(settings.ADMIN_PASSWORD.get_secret_value())
         admin_name = settings.ADMIN_USERNAME or "System Administrator"
         
         async with async_session() as session:

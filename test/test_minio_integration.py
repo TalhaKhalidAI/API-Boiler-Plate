@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 
-from App.storage.minio_storage import minio_service
+from App.storage.minio_storage import minio_storage as minio_service
 from App.core.settings import settings
 from App.core.exceptions import (
     MinIOAccessDeniedError,

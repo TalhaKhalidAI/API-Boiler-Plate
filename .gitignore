@@ -25,6 +25,8 @@ TestResults.xml
 *.sh
 *.db
 *.env
+.env.*
+!.env.example
 *.ps1
 test.py
 videos
@@ -45,3 +47,8 @@ QUERY
 *.python-version
 pyproject.toml
 uv.lock
+node_modules
+node_modules**
+pnpm-lock.yaml
+pnpm-workspace.yaml
+.aider*
