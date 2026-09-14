@@ -45,3 +45,9 @@ QUERY
 *.python-version
 pyproject.toml
 uv.lock
+node_modules**
+pnpm-lock.yaml
+pnpm-workspace.yaml*
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache.v4**
