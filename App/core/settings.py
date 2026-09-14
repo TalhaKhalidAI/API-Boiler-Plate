@@ -27,7 +27,7 @@ class Settings(BaseSettings):
  
     ADMIN_EMAIL:str=Field(...)
     ADMIN_USERNAME:str=Field(...)
-    ADMIN_PASSWORD:str=Field(...)
+    ADMIN_PASSWORD:SecretStr=Field(...)
     # Security
     SECRET_KEY:SecretStr= Field(
         ...,
@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     
     DATABASE_PORT: str = Field(
         default="5432",
-        pattern=r"^\d+$",
+        pattern="^\d+$",
         description="PostgreSQL port"
     )
     

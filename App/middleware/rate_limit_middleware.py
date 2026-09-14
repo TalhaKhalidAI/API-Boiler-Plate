@@ -1,4 +1,4 @@
-# App/core/rate_limit_middleware.py
+# App/middleware/rate_limit_middleware.py
 """
 Global Redis-backed rate limiter middleware.
 
@@ -7,15 +7,25 @@ Global Redis-backed rate limiter middleware.
 - Whitelist via EXEMPT_PATHS
 - Fails OPEN if Redis is down (doesn't block traffic)
 - Adds X-RateLimit-* headers to every response
-- Uses sliding time buckets in Redis
+- Uses fixed time buckets in Redis
+
+Client IP resolution:
+    X-Forwarded-For is honored ONLY when the immediate TCP peer is listed in
+    the TRUSTED_PROXIES environment variable (comma-separated IPs or CIDRs).
+    If TRUSTED_PROXIES is empty, XFF is ignored entirely and request.client.host
+    is used. This prevents a direct client from spoofing the header to obtain a
+    fresh rate-limit bucket per request.
 
 Usage in main.py:
-    from App.core.rate_limit_middleware import GlobalRateLimitMiddleware
+    from App.middleware.rate_limit_middleware import GlobalRateLimitMiddleware
     app.add_middleware(GlobalRateLimitMiddleware, default_limit="100/minute")
 """
 
+import ipaddress
+import os
 import time
 from typing import Optional, Tuple
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -24,6 +34,65 @@ from App.core.RedisConnector import redis_client
 from App.core.LoggingInit import get_core_logger
 
 logger = get_core_logger(__name__)
+
+
+# ============================================================
+# Trusted proxy resolution
+# ============================================================
+
+def _trusted_proxies() -> Tuple[str, ...]:
+    """
+    Read TRUSTED_PROXIES from the environment.
+
+    Returns a tuple of IP strings and/or CIDR strings. Empty tuple means
+    "ignore X-Forwarded-For entirely" — the safe default for deployments
+    where clients connect directly to the app.
+    """
+    raw = os.getenv("TRUSTED_PROXIES", "").strip()
+    if not raw:
+        return ()
+    return tuple(p.strip() for p in raw.split(",") if p.strip())
+
+
+def _is_trusted_peer(addr: str) -> bool:
+    """True if addr matches any entry in TRUSTED_PROXIES (exact or CIDR)."""
+    for entry in _trusted_proxies():
+        if entry == addr:
+            return True
+        if "/" in entry:
+            try:
+                if ipaddress.ip_address(addr) in ipaddress.ip_network(entry, strict=False):
+                    return True
+            except ValueError:
+                # Malformed CIDR in config — skip it, do not crash.
+                continue
+    return False
+
+
+def resolve_client_ip(request: Request) -> str:
+    """
+    Trusted-proxy-aware client IP resolution.
+
+    The peer address (request.client.host) is authoritative unless that peer
+    is a trusted proxy. XFF is honored only in that case. This is the single
+    source of truth — the rate limiter and the login rate limit both use it.
+    """
+    peer = request.client.host if request.client else "unknown"
+
+    if not _is_trusted_peer(peer):
+        return peer
+
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        # Standard convention (nginx, AWS ALB, Cloudflare): the leftmost entry
+        # is the original client.
+        return xff.split(",")[0].strip()
+
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+
+    return peer
 
 
 # ============================================================
@@ -69,9 +138,12 @@ class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
 
     The rate limit is keyed on: (client_ip, method, path, time_bucket).
     Uses INCR + EXPIRE for atomic counting.
+
+    client_ip is derived via resolve_client_ip(), which honors XFF only when
+    the immediate peer is a trusted proxy.
     """
 
-    # Paths that are NEVER rate limited
+    # Paths that are NEVER rate limited (exact prefix match below).
     EXEMPT_PATHS = (
         "/health",
         "/metrics",
@@ -97,18 +169,22 @@ class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app, default_limit: str = "100/minute"):
         super().__init__(app)
-    
+
         self.default_count, self.default_window = parse_limit(default_limit)
         self.endpoint_limits = {
             key: parse_limit(limit) for key, limit in self.PER_ENDPOINT.items()
         }
 
+        trusted = _trusted_proxies()
         logger.info(
             f"GlobalRateLimitMiddleware initialized: "
-            f"default={default_limit}, overrides={len(self.endpoint_limits)}"
+            f"default={default_limit}, "
+            f"overrides={len(self.endpoint_limits)}, "
+            f"trusted_proxies={list(trusted) or 'none (XFF ignored)'}"
         )
 
     # ---------- helpers ----------
+
     def _is_exempt(self, path: str) -> bool:
         return any(path == p or path.startswith(p + "/") for p in self.EXEMPT_PATHS)
 
@@ -130,14 +206,11 @@ class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
         return best if best else (self.default_count, self.default_window)
 
     def _client_ip(self, request: Request) -> str:
-        """Extract client IP, respecting X-Forwarded-For if present."""
-        xff = request.headers.get("x-forwarded-for")
-        if xff:
-            return xff.split(",")[0].strip()
-        real_ip = request.headers.get("x-real-ip")
-        if real_ip:
-            return real_ip.strip()
-        return request.client.host if request.client else "unknown"
+        """
+        Client IP resolution. Delegates to the shared trusted-proxy-aware
+        resolver — do not inline the XFF logic here.
+        """
+        return resolve_client_ip(request)
 
     # ---------- main dispatch ----------
 
@@ -157,13 +230,15 @@ class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
         bucket = int(time.time() // window)
         key = f"rl:{client_ip}:{method}:{path}:{bucket}"
 
-        # 4. Redis check
+        # 4. Redis check — INCR + EXPIRE in one pipeline so the key cannot
+        #    be left without a TTL if the process dies between calls.
         try:
             c = await redis_client.ensure_connected()
-            count = await c.incr(key)
-            if count == 1:
-                # First request in this bucket — set TTL
-                await c.expire(key, window + 1)
+            pipe = c.pipeline()
+            pipe.incr(key)
+            pipe.expire(key, window + 1)
+            results = await pipe.execute()
+            count = int(results[0])
 
         except Exception as e:
             # Redis down → FAIL OPEN. Never block traffic on limiter failure.
@@ -196,9 +271,10 @@ class GlobalRateLimitMiddleware(BaseHTTPMiddleware):
                 },
             )
 
-        # 7. Under limit → pass through, add headers
+        # 7. Under limit → pass through, add headers (setdefault so we never
+        #    clobber a header set by a downstream handler).
         response = await call_next(request)
-        response.headers["X-RateLimit-Limit"] = str(limit)
-        response.headers["X-RateLimit-Remaining"] = str(remaining)
-        response.headers["X-RateLimit-Reset"] = str(reset_at)
+        response.headers.setdefault("X-RateLimit-Limit", str(limit))
+        response.headers.setdefault("X-RateLimit-Remaining", str(remaining))
+        response.headers.setdefault("X-RateLimit-Reset", str(reset_at))
         return response

@@ -196,11 +196,11 @@ async def get_current_user_slt(
     is_slt_token = payload.get("types") == "slts"
     # Check token type - REJECT REFRESH TOKENS!
     token_type = payload.get("type")
-    if token_type == "refresh":
-        logger.warning("Refresh token used for authentication")
+    if token_type != "access":
+        logger.warning(f"Non-access token used for authentication: type={token_type!r}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh tokens cannot be used for authentication. Use an access token.",
+            detail="Invalid token type. An access token is required.",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
@@ -348,11 +348,11 @@ async def get_current_user(
     is_slt_token = payload.get("types") == "slts"
     # Check token type - REJECT REFRESH TOKENS
     token_type = payload.get("type")
-    if token_type == "refresh":
-        logger.warning("Refresh token used for authentication")
+    if token_type != "access":
+        logger.warning(f"Non-access token used for authentication: type={token_type!r}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh tokens cannot be used for authentication. Use an access token.",
+            detail="Invalid token type. An access token is required.",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
