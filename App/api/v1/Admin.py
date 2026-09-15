@@ -142,7 +142,13 @@ async def disable_account(
     request: Request,
     user_id: int,
     password: Optional[str] = Query(None, description="Required for non-admin users"),
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(require_permission(required_permissions=[
+                        Permission.ADMIN_USERS_DISABLE,
+                Permission.ADMIN_USERS_PROMOTE,
+                Permission.ADMIN_USERS_RESTORE,
+                Permission.ADMIN_SETTINGS_UPDATE,
+                Permission.USER_SELF_DISABLE,
+    ],mode="any",bypass_admin=False,additional_dependency=get_current_user)),
     db: AsyncSession = Depends(get_db),
 ):
     req_id = getattr(request.state, "request_id", "-")
@@ -270,7 +276,7 @@ async def temp_token_maker(
                 value=result.get("cookie_value"),
                 httponly=True,
                 secure=settings.COOKIE_SECURE,
-                samesite="lax",
+                samesite="strict",
                 max_age=120,
                 path="/",
                 domain=None,
@@ -309,7 +315,7 @@ async def temp_token_maker(
 )
 async def reset_auto_kill(
     request: Request,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(require_permission(required_permissions=[Permission.ADMIN_SYSTEM_KILL_SWITCH],mode="any",bypass_admin=False,additional_dependency=get_current_user)),
 ):
     req_id = getattr(request.state, "request_id", "-")
     try:
@@ -617,7 +623,10 @@ async def get_users_permissions(
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum records to return"),
     include_user_info: bool = Query(False, description="Include user email and name"),
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(require_permission(required_permissions=[
+        Permission.ADMIN_USERS_VIEW,
+        Permission.ADMIN_USERS_PROMOTE,
+    ],mode='any',bypass_admin=False,additional_dependency=get_current_user)),
     db: AsyncSession = Depends(get_db),
 ):
     req_id = getattr(request.state, "request_id", "-")

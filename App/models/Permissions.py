@@ -41,3 +41,4 @@ class Permission(str, Enum):
     ADMIN_SETTINGS_VIEW = "admin.settings.view"
     ADMIN_SETTINGS_UPDATE = "admin.settings.update"
     ADMIN_VIEW_ALL = "admin.view_all"
+    ADMIN_SYSTEM_KILL_SWITCH="admin.system.kill_switch"
