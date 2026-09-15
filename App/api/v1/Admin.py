@@ -38,7 +38,7 @@ from App.core.exceptions import (
     DuplicateEmailError,
     AccountAlreadyDisabledError,
 )
-from App.schemas.AuthScheema import UserResponse
+from App.schemas.AuthScheema import UserResponse, PasswordConfirmRequest
 from App.models.UserAuthModel import UpdateUser
 from App.models.Permissions import Permission
 from App.models.PermissionModel import (
@@ -141,7 +141,7 @@ async def update_account(
 async def disable_account(
     request: Request,
     user_id: int,
-    password: Optional[str] = Query(None, description="Required for non-admin users"),
+    payload: PasswordConfirmRequest = None,
     current_user: Dict[str, Any] = Depends(require_permission(required_permissions=[
                         Permission.ADMIN_USERS_DISABLE,
                 Permission.ADMIN_USERS_PROMOTE,
@@ -153,8 +153,9 @@ async def disable_account(
 ):
     req_id = getattr(request.state, "request_id", "-")
     try:
+        pwd = payload.password if payload else None
         service = AdminService(db)
-        result = await service.disable_account(user_id, password, current_user)
+        result = await service.disable_account(user_id, pwd, current_user)
         logger.info(f"[{req_id}] User {current_user.get('id')} disabled user {user_id}")
         return result
 
@@ -191,7 +192,7 @@ async def disable_account(
 async def enable_account(
     request: Request,
     user_id: int,
-    password: Optional[str] = Query(None),
+    payload: PasswordConfirmRequest = None,
     current_user: Dict[str, Any] = Depends(
         require_permission(
             required_permissions=[
@@ -208,8 +209,9 @@ async def enable_account(
 ):
     req_id = getattr(request.state, "request_id", "-")
     try:
+        pwd = payload.password if payload else None
         service = AdminService(db)
-        result = await service.enable_account(user_id, password, current_user)
+        result = await service.enable_account(user_id, pwd, current_user)
         logger.info(f"[{req_id}] Enable action processed for user {user_id}")
         return result
 
@@ -348,7 +350,7 @@ async def reset_auto_kill(
 async def delete_account(
     request: Request,
     user_id: int,
-    password: Optional[str] = None,
+    payload: PasswordConfirmRequest = None,
     current_user: Dict[str, Any] = Depends(
         require_permission(
             required_permissions=[
@@ -364,8 +366,9 @@ async def delete_account(
 ):
     req_id = getattr(request.state, "request_id", "-")
     try:
+        pwd = payload.password if payload else None
         service = AdminService(db)
-        result = await service.delete_account(user_id, password, current_user)
+        result = await service.delete_account(user_id, pwd, current_user)
         logger.info(f"[{req_id}] Delete action processed for user {user_id}")
         return result
 

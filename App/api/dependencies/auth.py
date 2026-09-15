@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from argon2 import PasswordHasher, exceptions as argon2_exceptions
-from jose import JWTError, jwt
+import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -101,7 +101,7 @@ def decode_jwt(token: str) -> Optional[Dict[str, Any]]:
             detail="Token has expired",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    except jwt.JWTError as e:
+    except jwt.InvalidTokenError as e:
         logger.debug(f"JWT decode failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -125,7 +125,7 @@ def decode_jwt_ignore_expiry(token: str) -> Optional[Dict[str, Any]]:
             options={"verify_exp": False}
         )
         return payload
-    except jwt.JWTError as e:
+    except jwt.InvalidTokenError as e:
         logger.warning(f"JWT decode (ignore-expiry) failed: {e}")
         return None
 
