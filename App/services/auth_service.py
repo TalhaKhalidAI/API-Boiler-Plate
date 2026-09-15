@@ -4,7 +4,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 from redis.exceptions import RedisError
-from jose import jwt
+import jwt
 
 from App.api.dependencies.auth import (
     authenticate_user,

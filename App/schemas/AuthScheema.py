@@ -10,6 +10,11 @@ class TokenResponse(BaseModel):
     expires_in: int
 
 
+class PasswordConfirmRequest(BaseModel):
+    password: Optional[str] = None
+
+
+
 class UpdateUser(BaseModel):
     name: str | None = None
     email: EmailStr | None = None

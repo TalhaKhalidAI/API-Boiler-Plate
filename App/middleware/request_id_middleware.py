@@ -12,7 +12,11 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         self.header_name = header_name
 
     async def dispatch(self, request: Request, call_next):
-        req_id = request.headers.get(self.header_name) or str(uuid.uuid4())
+        import re
+        raw_id = request.headers.get(self.header_name, "")
+        req_id = re.sub(r"[\r\n]", "", raw_id)[:64]
+        if not req_id:
+            req_id = str(uuid.uuid4())
         request.state.request_id = req_id
 
         response = await call_next(request)
