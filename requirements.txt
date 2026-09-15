@@ -5,7 +5,7 @@ asyncpg
 psycopg[binary]
 alembic
 redis
-python-jose[cryptography]
+PyJWT[crypto]>=2.8.0
 argon2-cffi
 pydantic
 pydantic-settings
