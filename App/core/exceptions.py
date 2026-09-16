@@ -78,3 +78,8 @@ class MinIOAccessDeniedError(MinIOError):
 class MinIOConnectionError(MinIOError):
     """Cannot reach the MinIO server."""
     default_message = "Cannot connect to object storage"
+
+
+class RateLimitError(DomainError):
+    """Raised when a caller exceeds a per-action rate limit (e.g. login)."""
+    default_message = "Too many attempts. Please try again later."

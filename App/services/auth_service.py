@@ -15,7 +15,7 @@ from App.api.dependencies.auth import (
     validate_password_strength,
 )
 from App.core import token_store
-from App.core.exceptions import DomainError, DuplicateEmailError
+from App.core.exceptions import DomainError, DuplicateEmailError,RateLimitError
 from App.core.settings import settings
 from App.repository.UserRepository import UserRepository
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,12 +26,20 @@ class AuthService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def login_user(self, username: str, password: str) -> Optional[Dict[str, Any]]:
+    async def login_user(self, username: str, password: str,ip: str = "unknown",) -> Optional[Dict[str, Any]]:
         """Authenticate and issue both tokens for a valid user."""
+
+        allowed = await token_store.check_login_rate(
+            identifier=username,
+            ip=ip,
+            max_attempts=settings.MAX_LOGIN_ATTEMPTS or 4,
+            window=300,
+        )
+        if not allowed:
+            raise RateLimitError("Too many login attempts. Try again in a few minutes.")
         user = await authenticate_user(username, password, self.db)
         if not user:
             return None
-
         family_id = str(uuid.uuid4())
         access_token = create_access_token(
             data={

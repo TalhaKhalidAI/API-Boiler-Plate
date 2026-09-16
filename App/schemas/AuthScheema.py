@@ -1,4 +1,4 @@
-from pydantic import BaseModel,EmailStr,ConfigDict
+from pydantic import BaseModel,EmailStr,ConfigDict,SecretStr
 from typing import Optional
 
 
@@ -11,10 +11,12 @@ class TokenResponse(BaseModel):
 
 
 class PasswordConfirmRequest(BaseModel):
-    password: Optional[str] = None
+    password: Optional[SecretStr] = None
 
 
-
+class PasswordUpdateRequest(BaseModel):
+    new_password: SecretStr
+    old_password: SecretStr | None = None
 class UpdateUser(BaseModel):
     name: str | None = None
     email: EmailStr | None = None

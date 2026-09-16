@@ -16,7 +16,7 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore"
     )
-
+    MAX_LOGIN_ATTEMPTS:int=Field(...)
     # MinIO / S3 Configuration
     MINIO_ENDPOINT: str = Field(
         default="localhost:9000",

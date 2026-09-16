@@ -38,7 +38,7 @@ from App.core.exceptions import (
     DuplicateEmailError,
     AccountAlreadyDisabledError,
 )
-from App.schemas.AuthScheema import UserResponse, PasswordConfirmRequest
+from App.schemas.AuthScheema import UserResponse, PasswordConfirmRequest,PasswordUpdateRequest
 from App.models.UserAuthModel import UpdateUser
 from App.models.Permissions import Permission
 from App.models.PermissionModel import (
@@ -454,7 +454,7 @@ async def restore_account(
 async def update_password(
     request: Request,
     user_id: int,
-    new_password: str,
+    passwd:PasswordUpdateRequest,
     current_user: Dict[str, Any] = Depends(
         require_permission(
             required_permissions=[
@@ -466,7 +466,7 @@ async def update_password(
             additional_dependency=get_current_user_slt,
         )
     ),
-    old_password: Optional[str] = None,
+     
     db: AsyncSession = Depends(get_db),
 ):
     req_id = getattr(request.state, "request_id", "-")
@@ -474,9 +474,9 @@ async def update_password(
         service = AdminService(db)
         result = await service.update_password(
             user_id=user_id,
-            new_password=new_password,
+            new_password=passwd.new_password.get_secret_value(),
             current_user=current_user,
-            old_password=old_password,
+            old_password=passwd.old_password.get_secret_value(),
         )
         logger.info(f"[{req_id}] Password update processed for user {user_id}")
         return result
