@@ -157,7 +157,7 @@ async def disable_account(
 ):
     req_id = getattr(request.state, "request_id", "-")
     try:
-        pwd = payload.password if payload else None
+        pwd = payload.password.get_secret_value() if payload else None
         service = AdminService(db)
         result = await service.disable_account(user_id, pwd, current_user)
         logger.info(f"[{req_id}] User {current_user.get('id')} disabled user {user_id}")
@@ -213,7 +213,7 @@ async def enable_account(
 ):
     req_id = getattr(request.state, "request_id", "-")
     try:
-        pwd = payload.password if payload else None
+        pwd = payload.password.get_secret_value() if payload else None
         service = AdminService(db)
         result = await service.enable_account(user_id, pwd, current_user)
         logger.info(f"[{req_id}] Enable action processed for user {user_id}")

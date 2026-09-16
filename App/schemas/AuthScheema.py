@@ -17,7 +17,7 @@ class PasswordConfirmRequest(BaseModel):
 class PasswordUpdateRequest(BaseModel):
     new_password: SecretStr
     old_password: SecretStr | None = None
-    password: Optional[str] = None
+    
 
 
 
