@@ -27,6 +27,7 @@ from App.core.exceptions import (
     DuplicateEmailError,
     UserNotFoundError,
     DomainError,
+    RateLimitError
 )
 from App.services.auth_service import AuthService
 from App.api.dependencies.auth import (
@@ -61,7 +62,8 @@ async def login(
     req_id = getattr(request.state, "request_id", "-")
     try:
         password = form_data.password.get_secret_value()
-        result = await AuthService(db).login_user(form_data.username, password)
+        client_ip = request.client.host if request.client else "unknown"
+        result = await AuthService(db).login_user(form_data.username, password,ip=client_ip)
 
         if not result:
             logger.warning(f"[{req_id}] Failed login for {form_data.username}")
@@ -83,7 +85,7 @@ async def login(
                 value=access_token,
                 httponly=True,
                 secure=settings.COOKIE_SECURE,
-                samesite="lax",
+                samesite="strict",
                 max_age=expires_in_seconds,
                 path="/",
             )
@@ -117,6 +119,12 @@ async def login(
 
     except HTTPException:
         raise
+    except RateLimitError as e:                              # ← NEW — insert here
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(e),
+            headers={"Retry-After": "300"},
+        )
     except RuntimeError as e:
         logger.exception(f"[{req_id}] Login infrastructure error: {e}")
         raise HTTPException(

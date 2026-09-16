@@ -111,18 +111,39 @@ async def is_access_blocked(jti: str) -> bool:
 
 # ========== LOGIN RATE LIMIT ==========
 
+# async def check_login_rate(
+#     email: str, ip: str, max_attempts: int = 10, window: int = 300
+# ) -> bool:
+#     """Returns True if allowed, False if rate-limited."""
+#     key = login_attempts_key(email, ip)
+#     c = await redis_client.ensure_connected()
+#     count = await c.incr(key)
+#     if count == 1:
+#         await c.expire(key, window)
+#     return count <= max_attempts
+
+async def clear_user_families(user_id: int) -> None:
+    """Delete the user's family-tracking set entirely."""
+    c = await redis_client.ensure_connected()
+    await c.delete(user_families_key(user_id))
 async def check_login_rate(
-    email: str, ip: str, max_attempts: int = 10, window: int = 300
+    identifier: str,
+    ip: str,
+    max_attempts: int = 5,
+    window: int = 300,
 ) -> bool:
-    """Returns True if allowed, False if rate-limited."""
-    key = login_attempts_key(email, ip)
+    """
+    Returns True if allowed, False if rate-limited.
+
+    Keyed on (normalized identifier, ip). Callers that want a second
+    bucket keyed only on the identifier (to catch distributed sprays)
+    should add it here.
+    """
+    ident = (identifier or "").strip().lower()
+    key = login_attempts_key(ident, ip)
     c = await redis_client.ensure_connected()
     count = await c.incr(key)
     if count == 1:
         await c.expire(key, window)
     return count <= max_attempts
 
-async def clear_user_families(user_id: int) -> None:
-    """Delete the user's family-tracking set entirely."""
-    c = await redis_client.ensure_connected()
-    await c.delete(user_families_key(user_id))

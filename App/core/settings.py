@@ -16,6 +16,7 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore"
     )
+    MAX_LOGIN_ATTEMPTS:int=Field(...)
     COOKIE_SECURE: bool = Field(
         default=True,
         description="Whether to set the 'Secure' flag on cookies"
@@ -162,7 +163,6 @@ class Settings(BaseSettings):
         le=131072,
         description="Memory cost for Argon2 hashing"
     )
-    
     PARALLELISM: int = Field(
         default=2,
         ge=1,
@@ -296,5 +296,4 @@ class Settings(BaseSettings):
             "pool_timeout": self.DATABASE_POOL_TIMEOUT,
         }
 
-# Create singleton instance
 settings = Settings()

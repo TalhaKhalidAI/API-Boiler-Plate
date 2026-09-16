@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from App.api.dependencies.auth import create_short_live_token, get_password_hash, verify_password
 from App.core.RedisConnector import redis_client
-from App.core.exceptions import DomainError, UserNotFoundError
+from App.core.exceptions import DomainError, UserNotFoundError,AccountAlreadyDisabledError,PasswordRequiredError,IncorrectPasswordError
 from App.models.Permissions import Permission
 from App.repository.UserRepository import UserRepository
 
@@ -95,7 +95,12 @@ class AdminService:
         updated_user = await repo.update(user_id, update_dict)
         return updated_user
 
-    async def disable_account(self, user_id: int, password: Optional[str], current_user: Dict[str, Any]):
+    async def disable_account(
+        self,
+        user_id: int,
+        password: Optional[str],
+        current_user: Dict[str, Any],
+    ):
         repo = UserRepository(self.db)
 
         current_user_id = current_user.get("id")
@@ -105,8 +110,6 @@ class AdminService:
         target_user = await repo.get_by_id(user_id)
         if not target_user:
             raise UserNotFoundError(f"User {user_id} not found")
-        if target_user.disabled:
-            raise ValueError("Account already disabled")
 
         is_admin = current_user_role == "admin"
         is_self = current_user_id == user_id
@@ -118,21 +121,39 @@ class AdminService:
         can_disable_any = is_admin or has_promote_permission or has_restore_permission
         can_disable_self = is_self and has_self_disable
 
-        if can_disable_any:
+        # Admin / delegated — disabling *someone else*: no password required.
+        if can_disable_any and not is_self:
+            # Repository raises AccountAlreadyDisabledError if already disabled.
             await repo.disable_account(user_id)
-            return {"status": "success", "user_id": user_id, "disabled_by": "admin_or_permission"}
+            return {
+                "status": "success",
+                "user_id": user_id,
+                "disabled_by": "admin_or_permission",
+            }
 
-        if can_disable_self:
+        # Self-disable path — always requires password, even for admins.
+        if is_self and (can_disable_self or can_disable_any):
+            if target_user.disabled:
+                raise AccountAlreadyDisabledError(f"User {user_id} is already disabled")
             if not password:
-                raise ValueError("Password required for self-disable")
+                raise PasswordRequiredError("Password required to disable your own account")
             if not verify_password(password, target_user.password_hash):
-                raise PermissionError("Incorrect password")
+                raise IncorrectPasswordError("Incorrect password")
             await repo.disable_account(user_id)
-            return {"status": "success", "user_id": user_id, "disabled_by": "self"}
+            return {
+                "status": "success",
+                "user_id": user_id,
+                "disabled_by": "self",
+            }
 
         raise PermissionError("Insufficient permissions to disable this account")
 
-    async def enable_account(self, user_id: int, password: Optional[str], current_user: Dict[str, Any]):
+    async def enable_account(
+        self,
+        user_id: int,
+        password: Optional[str],
+        current_user: Dict[str, Any],
+    ):
         repo = UserRepository(self.db)
 
         cur_id = current_user.get("id")
@@ -149,27 +170,33 @@ class AdminService:
 
         can_enable_any = is_admin or has_admin_enable or has_admin_promote
 
+        # ---- Authorization ----
         if is_slt_token:
             if current_user.get("token_purpose") != "account_restoration":
                 raise PermissionError("SLT token is not valid for account enablement")
             if cur_id != user_id:
-                raise PermissionError(f"SLT token can only enable user {cur_id}, not {user_id}")
+                raise PermissionError(
+                    f"SLT token can only enable user {cur_id}, not {user_id}"
+                )
         elif can_enable_any:
+            # Admin or delegated user — can enable anyone.
             pass
-        elif has_self_enable:
-            if not is_self:
-                raise PermissionError("You can only enable your own account")
+        elif has_self_enable and is_self:
+            # Self-enable — only if the caller is targeting themselves.
+            pass
         else:
             raise PermissionError("You don't have permission to enable this account")
 
+        # ---- State checks ----
         target_user = await repo.get_by_id(user_id)
         if not target_user:
             raise UserNotFoundError(f"User {user_id} not found")
-        if not target_user.disabled and target_user.is_active:
-            raise ValueError("User is already active. No enable needed.")
         if target_user.is_deleted:
-            raise ValueError("User is deleted. Use restore endpoint instead.")
+            raise DomainError("User is deleted. Use restore endpoint instead.")
+        if not target_user.disabled and target_user.is_active:
+            raise DomainError("User is already active. No enable needed.")
 
+        # ---- Enablement ----
         if is_slt_token:
             success = await repo.full_restore(user_id)
             if not success:
@@ -182,35 +209,26 @@ class AdminService:
                 "enabled_by": "SLT Token",
             }
 
-        if is_admin:
+        if can_enable_any:
+            # Admin or delegated (can only reach here if not SLT)
+            enabled_by = "Admin" if is_admin else "User with permission"
             success = await repo.full_restore(user_id)
             if not success:
                 raise RuntimeError("Failed to enable user account")
             return {
                 "status": "success",
-                "message": f"User {user_id} enabled by admin",
+                "message": f"User {user_id} enabled by {enabled_by.lower()}",
                 "user_id": user_id,
                 "user_email": target_user.email,
-                "enabled_by": "Admin",
+                "enabled_by": enabled_by,
             }
 
-        if has_admin_enable or has_admin_promote:
-            success = await repo.full_restore(user_id)
-            if not success:
-                raise RuntimeError("Failed to enable user account")
-            return {
-                "status": "success",
-                "message": f"User {user_id} enabled by user with permission",
-                "user_id": user_id,
-                "user_email": target_user.email,
-                "enabled_by": "User with permission",
-            }
-
-        if is_self:
+        # Self-enable (has_self_enable and is_self) — password required.
+        if is_self and has_self_enable:
             if not password:
-                raise ValueError("Password required for self-enable")
+                raise PasswordRequiredError("Password required for self-enable")
             if not verify_password(password, target_user.password_hash):
-                raise PermissionError("Incorrect password")
+                raise IncorrectPasswordError("Incorrect password")
             success = await repo.full_restore(user_id)
             if not success:
                 raise RuntimeError("Failed to enable your account")
@@ -222,6 +240,8 @@ class AdminService:
                 "enabled_by": "Self",
             }
 
+        # Shouldn't reach here — the authz block above already rejected the
+        # cases that could.
         raise PermissionError("You don't have permission to enable this account")
 
     async def temp_token_maker(self, user_id: int, current_user: Dict[str, Any], db, cookie_login: bool, restore_passwd: bool):

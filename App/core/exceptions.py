@@ -52,3 +52,13 @@ class AccountNotDeletedError(DomainError):
 class AdminCreationError(DomainError):
     default_message = "Failed to create admin"
 
+
+class RateLimitError(DomainError):
+    """Raised when a caller exceeds a per-action rate limit (e.g. login)."""
+    default_message = "Too many attempts. Please try again later."
+
+class PasswordRequiredError(DomainError):
+    default_message = "Password required for this action"
+
+class IncorrectPasswordError(DomainError):
+    default_message = "Incorrect password"
