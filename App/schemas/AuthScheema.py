@@ -11,19 +11,16 @@ class TokenResponse(BaseModel):
 
 
 class PasswordConfirmRequest(BaseModel):
-<<<<<<< Updated upstream
     password: Optional[SecretStr] = None
 
 
 class PasswordUpdateRequest(BaseModel):
     new_password: SecretStr
     old_password: SecretStr | None = None
-=======
     password: Optional[str] = None
 
 
 
->>>>>>> Stashed changes
 class UpdateUser(BaseModel):
     name: str | None = None
     email: EmailStr | None = None
