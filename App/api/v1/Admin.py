@@ -38,7 +38,11 @@ from App.core.exceptions import (
     DuplicateEmailError,
     AccountAlreadyDisabledError,
 )
+<<<<<<< Updated upstream
 from App.schemas.AuthScheema import UserResponse, PasswordConfirmRequest,PasswordUpdateRequest
+=======
+from App.schemas.AuthScheema import UserResponse, PasswordConfirmRequest
+>>>>>>> Stashed changes
 from App.models.UserAuthModel import UpdateUser
 from App.models.Permissions import Permission
 from App.models.PermissionModel import (
