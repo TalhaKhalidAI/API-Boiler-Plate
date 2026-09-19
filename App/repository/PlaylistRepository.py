@@ -243,7 +243,7 @@ class PlaylistRepository:
         thumbnail_key: Optional[str] = None,
     ) -> Playlist:
         if visibility not in ("private", "unlisted", "public"):
-            raise InfrastructureError(f"Invalid visibility: {visibility!r}")
+            raise ValidationError(f"Invalid visibility: {visibility!r}")
 
 
         playlist = Playlist(
@@ -275,7 +275,7 @@ class PlaylistRepository:
             playlist.description = description
         if visibility is not None:
             if visibility not in ("private", "unlisted", "public"):
-                raise InfrastructureError(
+                raise ValidationError(
                     f"Invalid visibility: {visibility!r}"
                 )
             playlist.visibility = visibility
@@ -351,7 +351,7 @@ class PlaylistRepository:
                 PlaylistVideo.playlist_id == playlist_id,
                 PlaylistVideo.video_id == video_id,
             )
-            .returning(PlaylistVideo.id)
+            .returning(PlaylistVideo.video_id)
         )
         if result.scalar_one_or_none() is None:
             raise PlaylistVideoNotFoundError(

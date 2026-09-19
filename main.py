@@ -36,7 +36,6 @@ from App.storage.minio_storage import  minio_storage
 from App.core.exceptions import (
     DomainError, InfrastructureError,
     UserNotFoundError, DuplicateEmailError, DuplicateNameError,MinIOError,PermissionDeniedError
- 
 )
 from redis.exceptions import RedisError
 

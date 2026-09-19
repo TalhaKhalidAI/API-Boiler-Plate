@@ -271,32 +271,11 @@ class CommentLikeNotFoundError(DomainError):
 class PlaylistNotFoundError(DomainError):
     default_message = "Playlist not found"
 
-
-class PlaylistAlreadyDeletedError(DomainError):
-    default_message = "Playlist is already deleted"
-
-
-class DuplicatePlaylistVideoError(DomainError):
-    default_message = "Video already exists in this playlist"
-
-
-class PlaylistVideoNotFoundError(DomainError):
-    default_message = "Video not found in this playlist"
-
-
-class PlaylistPositionConflictError(DomainError):
-    """Raised when a position insert would violate the unique constraint."""
-    default_message = "Position already occupied in playlist"
-
-
+ 
 # =====================================================================
 # SAVED VIDEOS
 # =====================================================================
-
-class VideoAlreadySavedError(DomainError):
-    default_message = "Video is already saved"
-
-
+ 
 class VideoNotSavedError(DomainError):
     default_message = "Video is not saved"
 
@@ -338,11 +317,7 @@ class InvalidWatchPositionError(DomainError):
 # VIDEO IMPRESSIONS
 # =====================================================================
 
-class InvalidImpressionError(DomainError):
-    """Raised when neither user_id nor session_id is provided (or both)."""
-    default_message = "Impression must have exactly one of user_id or session_id"
-
-
+ 
 # =====================================================================
 # NOTIFICATIONS
 # =====================================================================
@@ -388,36 +363,9 @@ class InvalidVideoReactionError(DomainError):
     default_message = "Invalid video reaction"
 
 
-class CategoryNotFoundError(DomainError):
-    default_message = "Category not found"
-
-class DuplicateCategoryError(DomainError):
-    default_message = "Category already exists"
-
-class InvalidCategoryParentError(DomainError):
-    """Raised when the parent would create a cycle or is inactive."""
-    default_message = "Invalid parent category"
-
 class CategoryAlreadyDeletedError(DomainError):
     default_message = "Category is already deleted"
-
-class CommentNotFoundError(DomainError):
-    default_message = "Comment not found"
-
-class CommentAlreadyDeletedError(DomainError):
-    default_message = "Comment is already deleted"
-
-class CommentDepthExceededError(DomainError):
-    """Raised when a reply would exceed the max nesting depth (3)."""
-    default_message = "Maximum reply depth exceeded"
-
-class InvalidCommentParentError(DomainError):
-    """Raised when the parent comment belongs to a different video."""
-    default_message = "Invalid parent comment"
-
-class CommentLikeNotFoundError(DomainError):
-    default_message = "Comment like not found"
-
+ 
 class ImpressionNotFoundError(DomainError):
     default_message = "Impression not found"
 
@@ -426,15 +374,7 @@ class InvalidImpressionError(DomainError):
     default_message = "Impression must have exactly one of user_id or session_id"
 
 
-class NotificationNotFoundError(DomainError):
-    default_message = "Notification not found"
-
-class InvalidNotificationTypeError(DomainError):
-    default_message = "Invalid notification type"
-
-class PlaylistNotFoundError(DomainError):
-    default_message = "Playlist not found"
-
+ 
 class PlaylistAlreadyDeletedError(DomainError):
     default_message = "Playlist is already deleted"
 
@@ -451,46 +391,9 @@ class PlaylistPositionConflictError(DomainError):
 class VideoAlreadySavedError(DomainError):
     default_message = "Video is already saved"
 
-class VideoNotSavedError(DomainError):
-    default_message = "Video is not saved"
-
-# =====================================================================
-# SUBSCRIPTIONS
-# =====================================================================
-class SubscriptionNotFoundError(DomainError):
-    default_message = "Subscription not found"
-
-class AlreadySubscribedError(DomainError):
-    default_message = "Already subscribed to this channel"
-
-class NotSubscribedError(DomainError):
-    default_message = "Not subscribed to this channel"
-
-class CannotSubscribeToSelfError(DomainError):
-    default_message = "Cannot subscribe to your own channel"
-
-# =====================================================================
-# TAGS
-# =====================================================================
-class TagNotFoundError(DomainError):
-    default_message = "Tag not found"
-
-class DuplicateTagError(DomainError):
-    default_message = "Tag already exists"
-
-class InvalidTagSlugError(DomainError):
-    default_message = "Invalid tag slug"
-
-# =====================================================================
-# WATCH HISTORY
-# =====================================================================
-class WatchHistoryNotFoundError(DomainError):
-    default_message = "Watch history entry not found"
-
-class InvalidWatchPositionError(DomainError):
-    """Raised when last_position_sec is negative or exceeds duration."""
-    default_message = "Invalid watch position"
-
+ 
+ 
+ 
 class InvalidPlaylistVisibilityError(DomainError):
     default_message = "Invalid playlist visibility"
 
