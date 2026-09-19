@@ -42,3 +42,34 @@ class Permission(str, Enum):
     ADMIN_SETTINGS_UPDATE = "admin.settings.update"
     ADMIN_VIEW_ALL = "admin.view_all"
     ADMIN_SYSTEM_KILL_SWITCH="admin.system.kill_switch"
+
+    # Video
+    ADMIN_VIDEO_UPDATE = "admin.video.update"
+    ADMIN_VIDEO_DELETE = "admin.video.delete"
+    ADMIN_VIDEO_PUBLISH = "admin.video.publish"
+
+    # Comment
+    ADMIN_COMMENT_DELETE = "admin.comment.delete"
+    ADMIN_COMMENT_PIN = "admin.comment.pin"
+
+    # Playlist
+    ADMIN_PLAYLIST_DELETE = "admin.playlist.delete"
+
+    # Category
+    ADMIN_CATEGORY_CREATE = "admin.category.create"
+    ADMIN_CATEGORY_UPDATE = "admin.category.update"
+    ADMIN_CATEGORY_DELETE = "admin.category.delete"
+
+    # Tag
+    ADMIN_TAG_DELETE = "admin.tag.delete"
+
+    # Notification
+    ADMIN_NOTIFICATION_BROADCAST = "admin.notification.broadcast"
+
+    # Moderation
+    ADMIN_MODERATE = "admin.moderate"
+
+    # Worker service account
+    WORKER_VIEW_COUNTING = "worker.view_counting"
+    WORKER_IMPRESSION = "worker.impression"
+    WORKER_TRANSCODE = "worker.transcode"

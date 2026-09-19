@@ -1,85 +1,38 @@
 """
-Pytest fixtures.
+Test fixtures — uses the REAL App.core.Connector.database.
 
-Important: the app uses a module-level singleton database engine
-(`App.core.Connector.database`) whose connection pool is bound to the
-event loop it was first used under. pytest-asyncio by default gives
-each test a fresh loop, which makes connection reuse across tests fail
-with "Event loop is closed".
-
-The fix: one session-scoped event loop for the whole test run, and
-explicitly dispose the engine between tests so no connection is ever
-carried across.
+Every test gets a session from the same engine your app uses,
+wrapped in a transaction that is rolled back after the test.
 """
 import asyncio
+from typing import AsyncGenerator
 
 import pytest
 import pytest_asyncio
-from httpx import AsyncClient, ASGITransport
-from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from main import app
-from App.core.Connector import database
-from App.core.RedisConnector import redis_client
+from App.core.Connector import database, Base
+from App.api.databases import MigrateTable  # noqa: F401  — register all models on Base
 
 
-# ---------------------------------------------------------------------------
-# One event loop for the entire test session.
-# ---------------------------------------------------------------------------
-@pytest.fixture(scope="session")
-def event_loop():
-    """
-    Override pytest-asyncio's default per-test loop.
+# ---------------------------------------------------------------------
+# Session-level setup: connect + create schema ONCE
+# ---------------------------------------------------------------------
 
-    This fixture is picked up automatically by pytest-asyncio for every
-    async test in the session, so all async work — including any
-    background connection the app opened — happens under one loop.
-    """
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
-# ---------------------------------------------------------------------------
-# Connect/disconnect the app's DB + Redis once per test, not per request.
-# ---------------------------------------------------------------------------
-@pytest_asyncio.fixture(scope="function", autouse=True)
-async def reset_app_connections():
-    """
-    Before each test: ensure DB + Redis are connected under the current loop.
-    After each test: dispose the engine so no connection leaks into the next loop.
-    """
-    # Connect on demand if not already connected.
-    if not database.is_connected:
-        await database.connect()
-    try:
-        c = await redis_client.ensure_connected()
-        await c.ping()
-    except Exception:
-        pass  # tests that don't need Redis can still run
-
+@pytest_asyncio.fixture(scope="session", autouse=True, loop_scope="session")
+async def _setup_database():
+    await database.connect()
+    engine = database.engine
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
     yield
-
-    # Dispose the DB pool so the next test starts clean.
-    try:
-        await database.disconnect()
-    except Exception:
-        pass
+    await database.disconnect()
 
 
-# ---------------------------------------------------------------------------
-# HTTP client pointed at the FastAPI app (no real network).
-# ---------------------------------------------------------------------------
-@pytest_asyncio.fixture
-async def client():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
-
-
-# ---------------------------------------------------------------------------
-# Shared login payload for tests.
-# ---------------------------------------------------------------------------
-@pytest.fixture
-def login_payload():
-    return {"username": "talha", "password": "Talha@6295"}
+@pytest_asyncio.fixture(loop_scope="session")
+async def db_session() -> AsyncGenerator[AsyncSession, None]:
+    async with database._session_factory() as session:
+        async with session.begin():
+            yield session
+            await session.rollback()

@@ -15,3 +15,4 @@ tenacity
 requests
 pytest
 psycopg2-binary
+minio

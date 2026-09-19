@@ -13,6 +13,7 @@ Middleware order (last added = outermost):
 from contextlib import asynccontextmanager
 import os
 import time
+from tenacity import RetryError
 
 from sqlalchemy import text
 from fastapi import FastAPI, Request, Depends
@@ -20,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
-
+from sqlalchemy.exc import SQLAlchemyError, OperationalError
 from App.api.v1 import app_router
 from App.core.settings import settings
 from App.core.LoggingInit import get_core_logger
@@ -32,6 +33,12 @@ from App.middleware.kill_switch_middleware import KillSwitchMiddleware
 from App.middleware.body_size_middleware import BodySizeLimitMiddleware
 from App.middleware.request_id_middleware import RequestIDMiddleware
 from App.storage.minio_storage import  minio_storage
+from App.core.exceptions import (
+    DomainError, InfrastructureError,
+    UserNotFoundError, DuplicateEmailError, DuplicateNameError,MinIOError,PermissionDeniedError
+ 
+)
+from redis.exceptions import RedisError
 
 logger = get_core_logger(__name__)
 
@@ -151,7 +158,141 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
             "request_id": req_id,
         },
     )
+# ============================================================================
+# Database down — handled globally so every endpoint returns the same shape
+# ============================================================================
+@app.exception_handler(OperationalError)
+async def db_operational_handler(request: Request, exc: OperationalError):
+    req_id = getattr(request.state, "request_id", "-")
+    logger.exception(f"[{req_id}] DB connection lost")
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "30"},
+        content={
+            "error": "database_unavailable",
+            "message": "Database is temporarily unavailable. Please try again.",
+            "status": 503,
+            "request_id": req_id,
+        },
+    )
 
+
+@app.exception_handler(SQLAlchemyError)
+async def db_error_handler(request: Request, exc: SQLAlchemyError):
+    req_id = getattr(request.state, "request_id", "-")
+    logger.exception(f"[{req_id}] DB error")
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "30"},
+        content={
+            "error": "database_error",
+            "message": "Database error. Please try again.",
+            "status": 503,
+            "request_id": req_id,
+        },
+    )
+
+
+@app.exception_handler(RedisError)
+async def redis_error_handler(request: Request, exc: RedisError):
+    req_id = getattr(request.state, "request_id", "-")
+    logger.exception(f"[{req_id}] Redis error")
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "30"},
+        content={
+            "error": "cache_unavailable",
+            "message": "Cache service temporarily unavailable.",
+            "status": 503,
+            "request_id": req_id,
+        },
+    )
+
+
+@app.exception_handler(MinIOError)
+async def minio_error_handler(request: Request, exc: MinIOError):
+    req_id = getattr(request.state, "request_id", "-")
+    logger.exception(f"[{req_id}] MinIO error")
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "30"},
+        content={
+            "error": "storage_unavailable",
+            "message": "Storage service temporarily unavailable.",
+            "status": 503,
+            "request_id": req_id,
+        },
+    )
+
+
+# ============================================================================
+# Domain errors — 400 by default, 404 for *NotFound
+# ============================================================================
+@app.exception_handler(DomainError)
+async def domain_error_handler(request: Request, exc: DomainError):
+    req_id = getattr(request.state, "request_id", "-")
+
+    # InfrastructureError is a subclass of DomainError — must be checked first
+    if isinstance(exc, InfrastructureError):
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "30"},
+            content={
+                "error": "infrastructure_unavailable",
+                "message": str(exc),
+                "status": 503,
+                "request_id": req_id,
+            },
+        )
+
+    # *NotFound → 404, *AlreadyExists / Duplicate → 409, everything else 400
+    name = type(exc).__name__
+    if name.endswith("NotFoundError"):
+        code = 404
+    elif "Already" in name or "Duplicate" in name:
+        code = 409
+    else:
+        code = 400
+
+    return JSONResponse(
+        status_code=code,
+        content={
+            "error": "domain_error",
+            "message": str(exc),
+            "status": code,
+            "request_id": req_id,
+        },
+    )
+
+@app.exception_handler(PermissionDeniedError)
+async def permission_denied_handler(request: Request, exc: PermissionDeniedError):
+    req_id = getattr(request.state, "request_id", "-")
+    return JSONResponse(
+        status_code=403,
+        content={
+            "error": "forbidden",
+            "message": str(exc),
+            "status": 403,
+            "request_id": req_id,
+        },
+    )
+
+@app.exception_handler(RetryError)
+async def retry_error_handler(request: Request, exc: RetryError):
+    req_id = getattr(request.state, "request_id", "-")
+    # RetryError wraps the last exception
+    last_exc = exc.last_attempt.exception() if exc.last_attempt else exc
+    logger.exception(f"[{req_id}] Retry exhausted: {last_exc}")
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "30"},
+        content={
+            "error": "infrastructure_unavailable",
+            "message": str(last_exc) or "Service temporarily unavailable",
+            "status": 503,
+            "request_id": req_id,
+        },
+    )
 
 # ============================================================================
 # Middleware — order matters (last added = outermost)

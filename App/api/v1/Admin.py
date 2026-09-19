@@ -16,33 +16,35 @@ Routes:
     POST   /set_permissions_bulk                — set multiple users' permissions
     GET    /users/permissions                   — read user permissions
     DELETE /remove_permissions                  — remove permissions
+
+Error handling:
+    These routes do NOT translate exceptions. All error handling is done
+    by the global handlers registered in main.py:
+      - DomainError / InfrastructureError  → 400 / 404 / 409 / 503
+      - SQLAlchemyError / OperationalError → 503
+      - RedisError / MinIOError            → 503
+      - PermissionError                    → 403 (if handler registered)
+      - Any other Exception                → 500 with request_id
+    Route bodies raise domain errors (or let them propagate) and let
+    main.py decide the HTTP response.
 """
 
-from datetime import timedelta
 from typing import Optional, Dict, Any
 
 from fastapi import (
-    APIRouter, Depends, HTTPException, status, Query, Request, Response,
+    APIRouter, Depends, Query, Request, Response,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import SQLAlchemyError
 
-from App.repository.UserRepository import UserRepository
 from App.services.admin_service import AdminService
 from App.core.LoggingInit import get_core_logger
 from App.core.Connector import get_db
 from App.core.settings import settings
-from App.core.exceptions import (
-    DomainError,
-    UserNotFoundError,
-    DuplicateEmailError,
-    AccountAlreadyDisabledError,
+from App.schemas.AuthScheema import (
+    UserResponse,
+    PasswordConfirmRequest,
+    PasswordUpdateRequest,
 )
- 
-from App.schemas.AuthScheema import UserResponse, PasswordConfirmRequest,PasswordUpdateRequest
- 
-from App.schemas.AuthScheema import UserResponse, PasswordConfirmRequest
- 
 from App.models.UserAuthModel import UpdateUser
 from App.models.Permissions import Permission
 from App.models.PermissionModel import (
@@ -51,10 +53,7 @@ from App.models.PermissionModel import (
     RemovePermissionsModel,
 )
 from App.api.dependencies.auth import (
-    verify_password,
     get_current_user,
-    get_password_hash,
-    create_short_live_token,
     get_current_user_slt,
 )
 from App.api.dependencies.permissions import require_permission
@@ -62,17 +61,6 @@ from App.api.dependencies.permissions import require_permission
 
 admin_router = APIRouter(prefix="/admin_access", tags=["Admin"])
 logger = get_core_logger(__name__)
-
-
-# ============================================================================
-# Helper: SLT detection
-# ============================================================================
-def _is_slt(current_user: Dict[str, Any]) -> bool:
-    """True when the auth context comes from a short-lived token."""
-    return (
-        current_user.get("types") == "slts"
-        or current_user.get("token_type") == "slts"
-    )
 
 
 # ============================================================================
@@ -106,28 +94,10 @@ async def update_account(
     db: AsyncSession = Depends(get_db),
 ):
     req_id = getattr(request.state, "request_id", "-")
-    try:
-        service = AdminService(db)
-        updated_user = await service.update_account(user_id, update_data, current_user)
-        logger.info(f"[{req_id}] User {user_id} updated by {current_user.get('email')}")
-        return UserResponse.model_validate(updated_user)
-
-    except HTTPException:
-        raise
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except UserNotFoundError:
-        raise HTTPException(status_code=404, detail="User not found")
-    except DuplicateEmailError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except DomainError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except SQLAlchemyError:
-        logger.exception(f"[{req_id}] Update account DB error")
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-    except Exception:
-        logger.exception(f"[{req_id}] Update account unexpected error")
-        raise HTTPException(status_code=500, detail="Update failed")
+    service = AdminService(db)
+    updated_user = await service.update_account(user_id, update_data, current_user)
+    logger.info(f"[{req_id}] User {user_id} updated by {current_user.get('email')}")
+    return UserResponse.model_validate(updated_user)
 
 
 # ============================================================================
@@ -135,7 +105,7 @@ async def update_account(
 # ============================================================================
 @admin_router.post(
     "/account/disable/{user_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    status_code=204,
     summary="Disable user account",
     description=(
         "Disable user account. Admin can disable any user; "
@@ -146,39 +116,28 @@ async def disable_account(
     request: Request,
     user_id: int,
     payload: PasswordConfirmRequest = None,
-    current_user: Dict[str, Any] = Depends(require_permission(required_permissions=[
-                        Permission.ADMIN_USERS_DISABLE,
+    current_user: Dict[str, Any] = Depends(
+        require_permission(
+            required_permissions=[
+                Permission.ADMIN_USERS_DISABLE,
                 Permission.ADMIN_USERS_PROMOTE,
                 Permission.ADMIN_USERS_RESTORE,
                 Permission.ADMIN_SETTINGS_UPDATE,
                 Permission.USER_SELF_DISABLE,
-    ],mode="any",bypass_admin=False,additional_dependency=get_current_user)),
+            ],
+            mode="any",
+            bypass_admin=False,
+            additional_dependency=get_current_user,
+        )
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     req_id = getattr(request.state, "request_id", "-")
-    try:
-        pwd = payload.password.get_secret_value() if payload else None
-        service = AdminService(db)
-        result = await service.disable_account(user_id, pwd, current_user)
-        logger.info(f"[{req_id}] User {current_user.get('id')} disabled user {user_id}")
-        return result
-
-    except HTTPException:
-        raise
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except UserNotFoundError:
-        raise HTTPException(status_code=404, detail="User not found")
-    except AccountAlreadyDisabledError:
-        raise HTTPException(status_code=409, detail="Account already disabled")
-    except DomainError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except SQLAlchemyError:
-        logger.exception(f"[{req_id}] Disable account DB error")
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-    except Exception:
-        logger.exception(f"[{req_id}] Disable account unexpected error")
-        raise HTTPException(status_code=500, detail="Disable failed")
+    pwd = payload.password.get_secret_value() if payload else None
+    service = AdminService(db)
+    result = await service.disable_account(user_id, pwd, current_user)
+    logger.info(f"[{req_id}] User {current_user.get('id')} disabled user {user_id}")
+    return result
 
 
 # ============================================================================
@@ -212,27 +171,11 @@ async def enable_account(
     db: AsyncSession = Depends(get_db),
 ):
     req_id = getattr(request.state, "request_id", "-")
-    try:
-        pwd = payload.password.get_secret_value() if payload else None
-        service = AdminService(db)
-        result = await service.enable_account(user_id, pwd, current_user)
-        logger.info(f"[{req_id}] Enable action processed for user {user_id}")
-        return result
-
-    except HTTPException:
-        raise
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except UserNotFoundError:
-        raise HTTPException(status_code=404, detail="User not found")
-    except DomainError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except SQLAlchemyError:
-        logger.exception(f"[{req_id}] Enable account DB error")
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-    except Exception:
-        logger.exception(f"[{req_id}] Enable account unexpected error")
-        raise HTTPException(status_code=500, detail="Failed to enable account")
+    pwd = payload.password.get_secret_value() if payload else None
+    service = AdminService(db)
+    result = await service.enable_account(user_id, pwd, current_user)
+    logger.info(f"[{req_id}] Enable action processed for user {user_id}")
+    return result
 
 
 # ============================================================================
@@ -240,7 +183,7 @@ async def enable_account(
 # ============================================================================
 @admin_router.post(
     "/account/temp_token/{user_id}",
-    status_code=status.HTTP_200_OK,
+    status_code=200,
     summary="Make temp token for user to change password and restore accounts",
     description=(
         "Make temporary token expire in 2 min for user to restore "
@@ -267,44 +210,28 @@ async def temp_token_maker(
     restore_passwd: bool = False,
 ):
     req_id = getattr(request.state, "request_id", "-")
-    try:
-        service = AdminService(db)
-        result = await service.temp_token_maker(
-            user_id=user_id,
-            current_user=current_user,
-            db=db,
-            cookie_login=cookie_login,
-            restore_passwd=restore_passwd,
+    service = AdminService(db)
+    result = await service.temp_token_maker(
+        user_id=user_id,
+        current_user=current_user,
+        db=db,
+        cookie_login=cookie_login,
+        restore_passwd=restore_passwd,
+    )
+    if cookie_login:
+        response.set_cookie(
+            key="CSO",
+            value=result.get("cookie_value"),
+            httponly=True,
+            secure=settings.COOKIE_SECURE,
+            samesite="strict",
+            max_age=120,
+            path="/",
+            domain=None,
         )
-        if cookie_login:
-            response.set_cookie(
-                key="CSO",
-                value=result.get("cookie_value"),
-                httponly=True,
-                secure=settings.COOKIE_SECURE,
-                samesite="strict",
-                max_age=120,
-                path="/",
-                domain=None,
-            )
-            result.pop("cookie_value", None)
-        logger.info(f"[{req_id}] Temporary token issued for user {user_id}")
-        return result
-
-    except HTTPException:
-        raise
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except UserNotFoundError:
-        raise HTTPException(status_code=404, detail="User not found")
-    except DomainError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except SQLAlchemyError:
-        logger.exception(f"[{req_id}] Temp token DB error")
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-    except Exception:
-        logger.exception(f"[{req_id}] Temp token unexpected error")
-        raise HTTPException(status_code=500, detail="Failed to create temp token")
+        result.pop("cookie_value", None)
+    logger.info(f"[{req_id}] Temporary token issued for user {user_id}")
+    return result
 
 
 # ============================================================================
@@ -312,7 +239,7 @@ async def temp_token_maker(
 # ============================================================================
 @admin_router.post(
     "/reset-auto-kill",
-    status_code=status.HTTP_200_OK,
+    status_code=200,
     summary="Reset Auto-Kill Switch",
     description=(
         "Allows administrators to reset the system from safety mode "
@@ -321,22 +248,20 @@ async def temp_token_maker(
 )
 async def reset_auto_kill(
     request: Request,
-    current_user: Dict[str, Any] = Depends(require_permission(required_permissions=[Permission.ADMIN_SYSTEM_KILL_SWITCH],mode="any",bypass_admin=False,additional_dependency=get_current_user)),
+    current_user: Dict[str, Any] = Depends(
+        require_permission(
+            required_permissions=[Permission.ADMIN_SYSTEM_KILL_SWITCH],
+            mode="any",
+            bypass_admin=False,
+            additional_dependency=get_current_user,
+        )
+    ),
 ):
     req_id = getattr(request.state, "request_id", "-")
-    try:
-        service = AdminService(None)
-        result = await service.reset_auto_kill(current_user)
-        logger.info(f"[{req_id}] Safety mode reset by admin: {current_user.get('email')}")
-        return result
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except Exception:
-        logger.exception(f"[{req_id}] Failed to clear auto-kill Redis key")
-        raise HTTPException(
-            status_code=503,
-            detail="Could not clear safety mode — Redis unavailable",
-        )
+    service = AdminService(None)
+    result = await service.reset_auto_kill(current_user)
+    logger.info(f"[{req_id}] Safety mode reset by admin: {current_user.get('email')}")
+    return result
 
 
 # ============================================================================
@@ -344,7 +269,7 @@ async def reset_auto_kill(
 # ============================================================================
 @admin_router.delete(
     "/account/{user_id}",
-    status_code=status.HTTP_200_OK,
+    status_code=200,
     summary="Delete account",
     description=(
         "Soft-delete a user account. Admin can delete any user; "
@@ -369,27 +294,11 @@ async def delete_account(
     db: AsyncSession = Depends(get_db),
 ):
     req_id = getattr(request.state, "request_id", "-")
-    try:
-        pwd = payload.password if payload else None
-        service = AdminService(db)
-        result = await service.delete_account(user_id, pwd, current_user)
-        logger.info(f"[{req_id}] Delete action processed for user {user_id}")
-        return result
-
-    except HTTPException:
-        raise
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except UserNotFoundError:
-        raise HTTPException(status_code=404, detail="User not found")
-    except DomainError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except SQLAlchemyError:
-        logger.exception(f"[{req_id}] Delete account DB error")
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-    except Exception:
-        logger.exception(f"[{req_id}] Delete account unexpected error")
-        raise HTTPException(status_code=500, detail="Failed to delete account")
+    pwd = payload.password if payload else None
+    service = AdminService(db)
+    result = await service.delete_account(user_id, pwd, current_user)
+    logger.info(f"[{req_id}] Delete action processed for user {user_id}")
+    return result
 
 
 # ============================================================================
@@ -397,7 +306,7 @@ async def delete_account(
 # ============================================================================
 @admin_router.post(
     "/account/restore/{user_id}",
-    status_code=status.HTTP_200_OK,
+    status_code=200,
     summary="Restore deleted/disabled account",
     description=(
         "Restore a soft-deleted or disabled account. Admin can restore any "
@@ -421,26 +330,10 @@ async def restore_account(
     db: AsyncSession = Depends(get_db),
 ):
     req_id = getattr(request.state, "request_id", "-")
-    try:
-        service = AdminService(db)
-        result = await service.restore_account(user_id, current_user)
-        logger.info(f"[{req_id}] Restore action processed for user {user_id}")
-        return result
-
-    except HTTPException:
-        raise
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except UserNotFoundError:
-        raise HTTPException(status_code=404, detail="User not found")
-    except DomainError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except SQLAlchemyError:
-        logger.exception(f"[{req_id}] Restore account DB error")
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-    except Exception:
-        logger.exception(f"[{req_id}] Restore account unexpected error")
-        raise HTTPException(status_code=500, detail="Failed to restore account")
+    service = AdminService(db)
+    result = await service.restore_account(user_id, current_user)
+    logger.info(f"[{req_id}] Restore action processed for user {user_id}")
+    return result
 
 
 # ============================================================================
@@ -448,7 +341,7 @@ async def restore_account(
 # ============================================================================
 @admin_router.put(
     "/account/password/{user_id}",
-    status_code=status.HTTP_200_OK,
+    status_code=200,
     summary="Update user password",
     description=(
         "Admin can update any user's password. Normal users update their "
@@ -458,7 +351,7 @@ async def restore_account(
 async def update_password(
     request: Request,
     user_id: int,
-    passwd:PasswordUpdateRequest,
+    passwd: PasswordUpdateRequest,
     current_user: Dict[str, Any] = Depends(
         require_permission(
             required_permissions=[
@@ -470,35 +363,18 @@ async def update_password(
             additional_dependency=get_current_user_slt,
         )
     ),
-     
     db: AsyncSession = Depends(get_db),
 ):
     req_id = getattr(request.state, "request_id", "-")
-    try:
-        service = AdminService(db)
-        result = await service.update_password(
-            user_id=user_id,
-            new_password=passwd.new_password.get_secret_value(),
-            current_user=current_user,
-            old_password=passwd.old_password.get_secret_value(),
-        )
-        logger.info(f"[{req_id}] Password update processed for user {user_id}")
-        return result
-
-    except HTTPException:
-        raise
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except UserNotFoundError:
-        raise HTTPException(status_code=404, detail="User not found")
-    except DomainError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except SQLAlchemyError:
-        logger.exception(f"[{req_id}] Update password DB error")
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-    except Exception:
-        logger.exception(f"[{req_id}] Update password unexpected error")
-        raise HTTPException(status_code=500, detail="Failed to update password")
+    service = AdminService(db)
+    result = await service.update_password(
+        user_id=user_id,
+        new_password=passwd.new_password.get_secret_value(),
+        current_user=current_user,
+        old_password=passwd.old_password.get_secret_value(),
+    )
+    logger.info(f"[{req_id}] Password update processed for user {user_id}")
+    return result
 
 
 # ============================================================================
@@ -520,17 +396,10 @@ async def get_all_permissions(
     db: AsyncSession = Depends(get_db),
 ):
     req_id = getattr(request.state, "request_id", "-")
-    try:
-        service = AdminService(db)
-        return await service.get_all_permissions()
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception(f"[{req_id}] Failed to list permissions")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error retrieving permissions",
-        )
+    service = AdminService(db)
+    result = await service.get_all_permissions()
+    logger.info(f"[{req_id}] Listed permission catalog")
+    return result
 
 
 # ============================================================================
@@ -552,26 +421,10 @@ async def set_permissions(
     db: AsyncSession = Depends(get_db),
 ):
     req_id = getattr(request.state, "request_id", "-")
-    try:
-        service = AdminService(db)
-        result = await service.set_permissions(pm, current_user)
-        logger.info(f"[{req_id}] Single permission update processed for user {pm.user_id}")
-        return result
-
-    except HTTPException:
-        raise
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except UserNotFoundError:
-        raise HTTPException(status_code=404, detail="User not found")
-    except DomainError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except SQLAlchemyError:
-        logger.exception(f"[{req_id}] Set permissions DB error")
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-    except Exception:
-        logger.exception(f"[{req_id}] Set permissions unexpected error")
-        raise HTTPException(status_code=500, detail="Failed to set permissions")
+    service = AdminService(db)
+    result = await service.set_permissions(pm, current_user)
+    logger.info(f"[{req_id}] Single permission update processed for user {pm.user_id}")
+    return result
 
 
 # ============================================================================
@@ -593,28 +446,10 @@ async def set_permissions_bulk(
     replace_all: bool = False,
 ):
     req_id = getattr(request.state, "request_id", "-")
-    try:
-        service = AdminService(db)
-        result = await service.set_permissions_bulk(bulk_pm, current_user, replace_all)
-        logger.info(f"[{req_id}] Bulk permission update completed: {result.get('mode')}")
-        return result
-
-    except HTTPException:
-        raise
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except UserNotFoundError:
-        raise HTTPException(status_code=404, detail="User not found")
-    except DomainError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except SQLAlchemyError:
-        logger.exception(f"[{req_id}] Bulk permissions DB error")
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-    except Exception:
-        logger.exception(f"[{req_id}] Bulk permissions unexpected error")
-        raise HTTPException(
-            status_code=500, detail="Error in bulk permission update"
-        )
+    service = AdminService(db)
+    result = await service.set_permissions_bulk(bulk_pm, current_user, replace_all)
+    logger.info(f"[{req_id}] Bulk permission update completed: {result.get('mode')}")
+    return result
 
 
 # ============================================================================
@@ -630,41 +465,30 @@ async def get_users_permissions(
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum records to return"),
     include_user_info: bool = Query(False, description="Include user email and name"),
-    current_user: Dict[str, Any] = Depends(require_permission(required_permissions=[
-        Permission.ADMIN_USERS_VIEW,
-        Permission.ADMIN_USERS_PROMOTE,
-    ],mode='any',bypass_admin=False,additional_dependency=get_current_user)),
+    current_user: Dict[str, Any] = Depends(
+        require_permission(
+            required_permissions=[
+                Permission.ADMIN_USERS_VIEW,
+                Permission.ADMIN_USERS_PROMOTE,
+            ],
+            mode="any",
+            bypass_admin=False,
+            additional_dependency=get_current_user,
+        )
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     req_id = getattr(request.state, "request_id", "-")
-    try:
-        service = AdminService(db)
-        result = await service.get_users_permissions(
-            user_id=user_id,
-            skip=skip,
-            limit=limit,
-            include_user_info=include_user_info,
-            current_user=current_user,
-        )
-        logger.info(f"[{req_id}] Permissions view requested for user {user_id}")
-        return result
-
-    except HTTPException:
-        raise
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except UserNotFoundError:
-        raise HTTPException(status_code=404, detail="User not found")
-    except DomainError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except SQLAlchemyError:
-        logger.exception(f"[{req_id}] Get user permissions DB error")
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-    except Exception:
-        logger.exception(f"[{req_id}] Get user permissions unexpected error")
-        raise HTTPException(
-            status_code=500, detail="Error retrieving permissions"
-        )
+    service = AdminService(db)
+    result = await service.get_users_permissions(
+        user_id=user_id,
+        skip=skip,
+        limit=limit,
+        include_user_info=include_user_info,
+        current_user=current_user,
+    )
+    logger.info(f"[{req_id}] Permissions view requested for user {user_id}")
+    return result
 
 
 # ============================================================================
@@ -687,23 +511,7 @@ async def remove_permissions(
     db: AsyncSession = Depends(get_db),
 ):
     req_id = getattr(request.state, "request_id", "-")
-    try:
-        service = AdminService(db)
-        result = await service.remove_permissions(data, current_user)
-        logger.info(f"[{req_id}] Permission removal processed for user {data.user_id}")
-        return result
-
-    except HTTPException:
-        raise
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except UserNotFoundError:
-        raise HTTPException(status_code=404, detail="User not found")
-    except DomainError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except SQLAlchemyError:
-        logger.exception(f"[{req_id}] Remove permissions DB error")
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-    except Exception:
-        logger.exception(f"[{req_id}] Remove permissions unexpected error")
-        raise HTTPException(status_code=500, detail="Error removing permissions")
+    service = AdminService(db)
+    result = await service.remove_permissions(data, current_user)
+    logger.info(f"[{req_id}] Permission removal processed for user {data.user_id}")
+    return result
