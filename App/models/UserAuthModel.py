@@ -60,7 +60,7 @@ class User(BaseModel):
         email_regex = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
         if not email_regex.match(v):
             raise ValueError("Invalid email format")
-        return v
+        return v     # ← validator #2: hand-rolled regex
 
 class UpdateUser(BaseModel):
     name: str | None = None

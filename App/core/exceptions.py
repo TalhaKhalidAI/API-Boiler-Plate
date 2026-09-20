@@ -407,3 +407,8 @@ class PermissionDeniedError(DomainError):
 
 class ValidationError(DomainError):
     default_message = "Invalid input"
+
+class IntegrityError(DomainError):
+    default_message = "Integraty error"
+
+ 

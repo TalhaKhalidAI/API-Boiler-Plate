@@ -193,7 +193,7 @@ class Settings(BaseSettings):
     # Argon2 Hashing
     MEMORY_COST: int = Field(
         default=65536,
-        ge=1024,
+        ge=19456,
         le=131072,
         description="Memory cost for Argon2 hashing"
     )

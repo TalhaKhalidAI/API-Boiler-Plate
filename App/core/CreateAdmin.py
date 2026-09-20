@@ -67,12 +67,12 @@ async def create_admin():
                     "admin.view_all": True,
                 }
             )
-            
+            await session.commit()
             if admin:
                 print(f"✅ Admin user created or already exists: {admin.email}")
             else:
                 print("❌ Failed to create admin")
-                
+        
         await engine.dispose()
         
     except Exception as e:

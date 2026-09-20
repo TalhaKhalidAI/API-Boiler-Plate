@@ -35,7 +35,7 @@ from App.middleware.request_id_middleware import RequestIDMiddleware
 from App.storage.minio_storage import  minio_storage
 from App.core.exceptions import (
     DomainError, InfrastructureError,
-    UserNotFoundError, DuplicateEmailError, DuplicateNameError,MinIOError,PermissionDeniedError
+    UserNotFoundError, DuplicateEmailError, DuplicateNameError,MinIOError,PermissionDeniedError,IntegrityError
 )
 from redis.exceptions import RedisError
 
@@ -96,39 +96,43 @@ _SENSITIVE_KEYS = {"password", "secret", "token", "refresh_token", "access_token
                    "authorization", "api_key", "apikey"}
 
 
+def _redact(value, depth: int = 0):
+    if depth > 10:  # guard against pathological nesting
+        return "***redacted***"
+    if isinstance(value, dict):
+        return {
+            k: ("***redacted***" if str(k).lower() in _SENSITIVE_KEYS else _redact(v, depth + 1))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(v, depth + 1) for v in value]
+    return value
+
+
+def _redact(value, depth: int = 0):
+    if depth > 10:
+        return "***redacted***"
+    if isinstance(value, dict):
+        return {
+            k: ("***redacted***" if str(k).lower() in _SENSITIVE_KEYS else _redact(v, depth + 1))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(v, depth + 1) for v in value]
+    return value
+
+
 def _redact_errors(errors: list) -> list:
-    """Strip sensitive input values from Pydantic validation errors."""
     out = []
     for err in errors:
         err = dict(err)
         loc = err.get("loc", ())
-
-        # Redact if the failing field name looks sensitive
         if any(str(part).lower() in _SENSITIVE_KEYS for part in loc):
             err["input"] = "***redacted***"
-
-        # Redact inside nested dict inputs
-        if isinstance(err.get("input"), dict):
-            err["input"] = {
-                k: ("***redacted***" if str(k).lower() in _SENSITIVE_KEYS else v)
-                for k, v in err["input"].items()
-            }
+        else:
+            err["input"] = _redact(err.get("input"))
         out.append(err)
     return out
-
-
-@app.exception_handler(StarletteHTTPException)
-async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    req_id = getattr(request.state, "request_id", "-")
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": exc.detail,
-            "status": exc.status_code,
-            "request_id": req_id,
-        },
-        headers=getattr(exc, "headers", None),
-    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -292,7 +296,57 @@ async def retry_error_handler(request: Request, exc: RetryError):
             "request_id": req_id,
         },
     )
+@app.exception_handler(InfrastructureError)
+async def infrastructure_error_handler(request: Request, exc: InfrastructureError):
+    req_id = getattr(request.state, "request_id", "-")
+    logger.warning(f"[{req_id}] Infrastructure error: {exc}")
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "30"},
+        content={
+            "error": "infrastructure_unavailable",
+            "message": str(exc) or "Service temporarily unavailable",
+            "status": 503,
+            "request_id": req_id,
+        },
+    )
 
+@app.exception_handler(RuntimeError)
+async def runtime_error_handler(request: Request, exc: RuntimeError):
+    """
+    Safety net for RuntimeError. In our codebase, RuntimeError is only
+    raised by RedisConnector when Redis is unavailable. Ideally that
+    should be InfrastructureError, but until RedisConnector is fixed,
+    this catches it and returns 503 instead of 500.
+    """
+    req_id = getattr(request.state, "request_id", "-")
+    logger.exception(f"[{req_id}] RuntimeError: {exc}")
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "30"},
+        content={
+            "error": "infrastructure_unavailable",
+            "message": str(exc) or "Service temporarily unavailable",
+            "status": 503,
+            "request_id": req_id,
+        },
+    )
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(request: Request, exc: IntegrityError):
+    req_id = getattr(request.state, "request_id", "-")
+    constraint = getattr(getattr(exc, "orig", None), "diag", None)
+    constraint_name = getattr(constraint, "constraint_name", None) if constraint else None
+    logger.warning(f"[{req_id}] IntegrityError constraint={constraint_name}")
+    return JSONResponse(
+        status_code=409,
+        content={
+            "error": "conflict",
+            "message": "Resource already exists or violates a constraint",
+            "constraint": constraint_name,
+            "status": 409,
+            "request_id": req_id,
+        },
+    )
 # ============================================================================
 # Middleware — order matters (last added = outermost)
 # ============================================================================

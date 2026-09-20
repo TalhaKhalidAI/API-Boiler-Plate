@@ -4,7 +4,7 @@ import redis.asyncio as redis
 from redis.exceptions import RedisError
 from App.core.settings import settings
 from App.core.LoggingInit import get_core_logger
-
+from App.core.exceptions import InfrastructureError
 logger = get_core_logger(__name__)
 
 
@@ -41,7 +41,7 @@ class RedisClient:
             self._client = None
             self._is_connected = False
             logger.error(f"Redis connection failed: {e}")
-            raise RuntimeError("Redis unavailable") from e
+            raise InfrastructureError("Redis unavailable") from e
 
     async def connect(self) -> None:
         """Connect (or no-op if already connected). Serialized by lock."""

@@ -374,7 +374,7 @@ class PlaylistRepository:
         return result.scalar_one_or_none()
 
     async def has_video(self, playlist_id: int, video_id: int) -> bool:
-        stmt = select(PlaylistVideo.id).where(
+        stmt = select(PlaylistVideo.video_id).where(
             PlaylistVideo.playlist_id == playlist_id,
             PlaylistVideo.video_id == video_id,
         ).limit(1)
@@ -474,6 +474,7 @@ class PlaylistRepository:
             stmt = stmt.where(
                 Video.deleted_at.is_(None),
                 Video.status == "ready",
+                Video.visibility == "public",
             )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
