@@ -497,6 +497,7 @@ class VideoRepository:
     # VIDEO VARIANTS
     # =================================================================
 
+
     async def add_variant(
         self,
         *,
@@ -510,23 +511,43 @@ class VideoRepository:
         segment_count: Optional[int] = None,
         size_bytes: Optional[int] = None,
         status: str = "pending",
-    ) -> VideoVariant:
-        variant = VideoVariant(
-            video_id=video_id,
-            quality=quality,
-            codec=codec,
-            playlist_key=playlist_key,
-            width=width,
-            height=height,
-            bitrate_kbps=bitrate_kbps,
-            segment_count=segment_count,
-            size_bytes=size_bytes,
-            status=status,
+    ) -> None:
+        """
+        Idempotent upsert for a video variant.
+
+        Retry-safe: a second call for the same (video_id, quality, codec)
+        overwrites the existing row instead of raising IntegrityError.
+        This matters because the transcode pipeline can be retried after
+        a partial crash (see transcode_service.transcode_video).
+        """
+        stmt = (
+            pg_insert(VideoVariant)
+            .values(
+                video_id=video_id,
+                quality=quality,
+                codec=codec,
+                playlist_key=playlist_key,
+                width=width,
+                height=height,
+                bitrate_kbps=bitrate_kbps,
+                segment_count=segment_count,
+                size_bytes=size_bytes,
+                status=status,
+            )
+            .on_conflict_do_update(
+                index_elements=["video_id", "quality", "codec"],
+                set_={
+                    "playlist_key": playlist_key,
+                    "width": width,
+                    "height": height,
+                    "bitrate_kbps": bitrate_kbps,
+                    "segment_count": segment_count,
+                    "size_bytes": size_bytes,
+                    "status": status,
+                },
+            )
         )
-        self.session.add(variant)
-        await self._safe_flush()
-        await self.session.refresh(variant)
-        return variant
+        await self.session.execute(stmt)
 
     async def get_variant(
         self, video_id: int, quality: str, codec: str
