@@ -8,7 +8,7 @@ Routes:
     GET  /users_config/users     — list users (admin only)
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Body, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Body, Response,File,UploadFile
 from fastapi.security import HTTPAuthorizationCredentials
 from typing import Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -138,3 +138,15 @@ async def list_users(
         "skip": data["skip"],
         "limit": data["limit"],
     }
+
+@user_router.post("/me/profile-pic")
+async def upload_profile_pic(
+    file: UploadFile = File(...),
+    current_user: Dict[str, Any] = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a profile picture (max 5 MB)."""
+    user = await UserService(db).upload_profile_pic(
+        current_user["id"], current_user, file=file
+    )
+    return {"user_id": user.id, "profile_pic": user.profile_pic}

@@ -30,7 +30,9 @@ from App.core.exceptions import (
     MinIOError,
     MinIOObjectNotFoundError,
 )
-
+ 
+import json
+from typing import Any, Dict
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -180,25 +182,18 @@ class AsyncMinIOClient:
     # ----- bucket operations -----
 
     async def ensure_bucket(self, bucket: str) -> None:
-        """Create the bucket if it doesn't exist. Idempotent."""
-        def _op() -> None:
+        """Create bucket if it doesn't exist. Idempotent."""
+        def _op():
             if not self.client.bucket_exists(bucket):
                 self.client.make_bucket(bucket)
-
-        try:
-            await asyncio.to_thread(_op)
-        except S3Error as e:
-            raise _translate_s3_error(e, f"ensure_bucket({bucket})") from e
-        except (MaxRetryError, NewConnectionError, ConnectionError, TimeoutError) as e:
-            raise _translate_network_error(e, f"ensure_bucket({bucket})") from e
-
-    async def bucket_exists(self, bucket: str) -> bool:
-        try:
-            return await asyncio.to_thread(self.client.bucket_exists, bucket)
-        except S3Error as e:
-            raise _translate_s3_error(e, f"bucket_exists({bucket})") from e
-        except (MaxRetryError, NewConnectionError, ConnectionError, TimeoutError) as e:
-            raise _translate_network_error(e, f"bucket_exists({bucket})") from e
+        await asyncio.to_thread(_op)
+        async def bucket_exists(self, bucket: str) -> bool:
+            try:
+                return await asyncio.to_thread(self.client.bucket_exists, bucket)
+            except S3Error as e:
+                raise _translate_s3_error(e, f"bucket_exists({bucket})") from e
+            except (MaxRetryError, NewConnectionError, ConnectionError, TimeoutError) as e:
+                raise _translate_network_error(e, f"bucket_exists({bucket})") from e
 
     async def list_buckets(self) -> list[str]:
         try:
@@ -413,7 +408,25 @@ class AsyncMinIOClient:
         except (MaxRetryError, NewConnectionError, ConnectionError, TimeoutError) as e:
             raise _translate_network_error(e, f"presign_put({bucket}/{key})") from e
 
+# App/storage/minio_storage.py — add to AsyncMinIOClient
 
+# App/storage/minio_storage.py
+
+
+
+# ... existing class methods ...
+
+async def set_bucket_policy(self, bucket: str, policy: Dict[str, Any]) -> None:
+    """
+    Apply a bucket policy. Replaces any existing policy on the bucket.
+
+    `policy` is a Python dict; MinIO's SDK expects a JSON string, so we
+    serialize here. Runs in a thread because the MinIO client is sync.
+    """
+    def _op():
+        self.client.set_bucket_policy(bucket, json.dumps(policy))
+
+    await asyncio.to_thread(_op)
 # ---------------------------------------------------------------------------
 # Singleton + FastAPI dependency
 # ---------------------------------------------------------------------------

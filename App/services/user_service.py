@@ -5,9 +5,15 @@ from App.api.dependencies.auth import (
     decode_jwt_ignore_expiry,
     refresh_access_token,
 )
-from App.core.exceptions import DomainError, UserNotFoundError
-from App.repository.UserRepository import UserRepository
+from App.storage.minio_storage import minio_storage
+from App.storage import paths as storage_paths
 
+from App.core.LoggingInit import get_core_logger
+from fastapi import UploadFile
+from App.core.exceptions import DomainError, UserNotFoundError,ValidationError,PermissionDeniedError
+from App.repository.UserRepository import UserRepository
+from App.core.settings import settings
+logger = get_core_logger(__name__)
 
 class UserService:
     """Application business logic for user self-service and admin read flows."""
@@ -72,3 +78,45 @@ class UserService:
             "skip": skip,
             "limit": limit,
         }
+
+    async def upload_profile_pic(
+        self,
+        user_id: int,
+        current_user: Dict[str, Any],
+        *,
+        file: UploadFile,
+    ):
+        """Upload a profile picture (self-only)."""
+        if current_user.get("id") != user_id:
+            raise PermissionDeniedError("You can only update your own profile")
+
+        repo = UserRepository(self.db)
+        user = await repo.get_by_id(user_id)
+        if not user:
+            raise UserNotFoundError(f"User {user_id} not found")
+
+        if not file.content_type or not file.content_type.startswith("image/"):
+            raise ValidationError("Profile picture must be an image")
+
+        data = await file.read()
+        if len(data) == 0:
+            raise ValidationError("Profile picture is empty")
+        if len(data) > 5 * 1024 * 1024:
+            raise ValidationError("Profile picture too large (max 5 MB)")
+
+        key = storage_paths.user_profile_pic_key(user_id)
+
+        await minio_storage.ensure_bucket(settings.MINIO_DEFAULT_BUCKET)
+        await minio_storage.put_object(
+            bucket=settings.MINIO_DEFAULT_BUCKET,
+            key=key,
+            data=data,
+            content_type=file.content_type or "image/jpeg",
+        )
+
+        logger.info(f"Profile picture uploaded for user {user_id}")
+
+        return await repo.update(
+            user_id,
+            {"profile_pic": storage_paths.PROFILE_PIC_FILENAME},
+        )

@@ -16,3 +16,4 @@ requests
 pytest
 psycopg2-binary
 minio
+python-multipart

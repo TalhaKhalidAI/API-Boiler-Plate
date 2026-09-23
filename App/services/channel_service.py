@@ -1,39 +1,56 @@
 # App/services/channel_service.py
+"""
+Business logic for channels.
+
+Authorization:
+  - Anyone can read a channel.
+  - Owner + `channel.update.self` / `channel.delete.self` / channel.self.* → mutate own channel.
+  - Admin or `admin.channel.*` → mutate any channel.
+
+Storage policy:
+  - Service generates MinIO keys and uploads directly.
+  - Repositories never touch MinIO.
+  - Banner + avatar are small (< 20 MB) so they go through FastAPI,
+    not presigned URLs.
+"""
 
 import json
 from typing import Any, Dict, Optional
+
+from fastapi import UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from App.services.base import BaseService
 from App.repository.ChannelRepository import ChannelRepository
 from App.repository.UserRepository import UserRepository
 from App.repository.VideoRepository import VideoRepository
+from App.core.settings import settings
+from App.core.LoggingInit import get_core_logger
 from App.core.exceptions import (
     ChannelNotFoundError,
     UserNotFoundError,
     ChannelAlreadyExistsError,
     DomainError,
-    PermissionDeniedError
+    PermissionDeniedError,
+    ValidationError,
 )
+from App.storage.minio_storage import minio_storage
+from App.storage import paths as storage_paths
+
+
+logger = get_core_logger(__name__)
 
 
 class ChannelService(BaseService):
-    """
-    Business logic for channels.
-
-    Authorization:
-      - Anyone can read a channel.
-      - Owner + `channel.update.self` / `channel.delete.self` / channel.self.* → mutate own channel.
-      - Admin or `admin.channel.*` → mutate any channel.
-    """
-
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
         self.channels = ChannelRepository(session)
         self.users = UserRepository(session)
         self.videos = VideoRepository(session)
 
-    # ---------- helpers ----------
+    # =====================================================================
+    # HELPERS
+    # =====================================================================
 
     @staticmethod
     def _normalize_permissions(perms: Any) -> Dict[str, Any]:
@@ -67,7 +84,9 @@ class ChannelService(BaseService):
             return
         raise PermissionDeniedError("You don't have permission to do this")
 
-    # ---------- read ----------
+    # =====================================================================
+    # READ
+    # =====================================================================
 
     async def get_channel(self, channel_id: int):
         channel = await self.channels.get_by_id(channel_id)
@@ -90,6 +109,15 @@ class ChannelService(BaseService):
             raise ChannelNotFoundError(f"User {ctx['id']} has no channel")
         return channel
 
+    async def list_channels_public(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+    ):
+        """Return active, non-deleted channels ordered by subscriber count."""
+        return await self.channels.list_active(limit=limit, offset=offset)
+
     async def get_channel_page(self, channel_id: int):
         channel = await self.get_channel(channel_id)
         videos = await self.videos.list_by_channel(
@@ -97,7 +125,9 @@ class ChannelService(BaseService):
         )
         return {"channel": channel, "videos": videos}
 
-    # ---------- write ----------
+    # =====================================================================
+    # WRITE
+    # =====================================================================
 
     async def create_channel(
         self,
@@ -204,3 +234,91 @@ class ChannelService(BaseService):
             self_perm="channel.delete.self",
         )
         await self.channels.soft_delete(channel_id)
+
+    # =====================================================================
+    # MINIO — BANNER + AVATAR
+    # =====================================================================
+
+    async def upload_banner(
+        self,
+        channel_id: int,
+        current_user: Dict[str, Any],
+        *,
+        file: UploadFile,
+    ):
+        """Upload a banner image for the channel."""
+        ctx = self._ctx(current_user)
+        channel = await self.get_channel(channel_id)
+        self._assert_can(
+            ctx, channel.owner_id,
+            admin_perm="admin.channel.update",
+            self_perm="channel.update.self",
+        )
+
+        if not file.content_type or not file.content_type.startswith("image/"):
+            raise ValidationError("Banner must be an image")
+
+        data = await file.read()
+        if len(data) == 0:
+            raise ValidationError("Banner is empty")
+        if len(data) > 10 * 1024 * 1024:
+            raise ValidationError("Banner too large (max 10 MB)")
+
+        key = storage_paths.channel_banner_key(channel.handle)
+
+        await minio_storage.ensure_bucket(settings.MINIO_DEFAULT_BUCKET)
+        await minio_storage.put_object(
+            bucket=settings.MINIO_DEFAULT_BUCKET,
+            key=key,
+            data=data,
+            content_type=file.content_type or "image/jpeg",
+        )
+
+        logger.info(f"Banner uploaded for channel {channel_id} key={key}")
+
+        return await self.channels.update_profile(
+            channel_id,
+            banner_key=storage_paths.BANNER_FILENAME,
+        )
+
+    async def upload_avatar(
+        self,
+        channel_id: int,
+        current_user: Dict[str, Any],
+        *,
+        file: UploadFile,
+    ):
+        """Upload an avatar image for the channel."""
+        ctx = self._ctx(current_user)
+        channel = await self.get_channel(channel_id)
+        self._assert_can(
+            ctx, channel.owner_id,
+            admin_perm="admin.channel.update",
+            self_perm="channel.update.self",
+        )
+
+        if not file.content_type or not file.content_type.startswith("image/"):
+            raise ValidationError("Avatar must be an image")
+
+        data = await file.read()
+        if len(data) == 0:
+            raise ValidationError("Avatar is empty")
+        if len(data) > 5 * 1024 * 1024:
+            raise ValidationError("Avatar too large (max 5 MB)")
+
+        key = storage_paths.channel_avatar_key(channel.handle)
+
+        await minio_storage.ensure_bucket(settings.MINIO_DEFAULT_BUCKET)
+        await minio_storage.put_object(
+            bucket=settings.MINIO_DEFAULT_BUCKET,
+            key=key,
+            data=data,
+            content_type=file.content_type or "image/jpeg",
+        )
+
+        logger.info(f"Avatar uploaded for channel {channel_id} key={key}")
+
+        return await self.channels.update_profile(
+            channel_id,
+            avatar_key=storage_paths.AVATAR_FILENAME,
+        )

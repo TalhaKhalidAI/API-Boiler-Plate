@@ -201,13 +201,30 @@ class Settings(BaseSettings):
     default=None,
     description="Path to CA bundle for MinIO TLS verification",
 )
+    MINIO_UPLOAD_URL_EXPIRY_SEC: int = Field(
+        default=86400,
+        ge=300,
+        le=604800,
+        description="Presigned upload URL expiry (default 24h)",
+    )
+    MINIO_PLAYBACK_URL_EXPIRY_SEC: int = Field(
+        default=3600,
+        ge=60,
+        le=604800,
+        description="Presigned playback URL expiry (default 1h)",
+    )
+    MINIO_MAX_VIDEO_SIZE_BYTES: int = Field(
+        default=2 * 1024**3,
+        ge=1024 * 1024,
+        description="Max video size in bytes (default 2 GB)",
+    )
     PARALLELISM: int = Field(
         default=2,
         ge=1,
         le=8,
         description="Parallelism factor for Argon2"
     )
-    
+
     HASH_LENGTH: int = Field(
         default=32,
         ge=16,

@@ -3,7 +3,7 @@ from sqlalchemy import select, update, delete, or_, text, func
 from sqlalchemy.orm import selectinload, joinedload
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple,Dict,Any
 from datetime import datetime, timezone
 
 from App.core.LoggingInit import core_logger
@@ -350,7 +350,7 @@ class VideoRepository:
             storage_bucket=storage_bucket,
             storage_prefix=storage_prefix,
             master_playlist_key=master_playlist_key,
-            status="processing",
+            status="pending",
             visibility="private",
         )
         self.session.add(video)
@@ -376,13 +376,44 @@ class VideoRepository:
         await self._safe_flush()
         return video
 
-    async def set_status(self, video_id: int, status: str) -> Video:
-        if status not in ("processing", "ready", "failed", "deleted"):
-            raise InvalidVideoStatusError(f"Invalid status: {status}")
-        video = await self._get_video_or_raise(video_id, include_deleted=True)
-        video.status = status
-        await self._safe_flush()
-        return video
+    async def set_status(
+        self,
+        video_id: int,
+        status: str,
+        *,
+        reason: Optional[str] = None,
+    ) -> None:
+        """
+        Update video status. Tracks when processing started so a recovery
+        sweep can find zombies left behind by crashed/killed workers.
+
+        Sets:
+            status = :status
+            processing_started_at = now()   if status == 'processing'
+            processing_started_at = NULL    if status in ('ready','failed')
+            failure_reason = :reason        if status == 'failed'
+            failure_reason = NULL           otherwise
+            updated_at = now()              always
+        """
+        now = func.now()
+        values: Dict[str, Any] = {
+            "status": status,
+            "updated_at": now,
+        }
+
+        if status == "processing":
+            values["processing_started_at"] = now
+            values["failure_reason"] = None
+        elif status in ("ready", "failed"):
+            values["processing_started_at"] = None
+            values["failure_reason"] = reason if status == "failed" else None
+        else:
+            # 'deleted' or other non-pipeline status — don't touch timestamps
+            values["failure_reason"] = None
+
+        await self.session.execute(
+            update(Video).where(Video.id == video_id).values(**values)
+        )
 
     async def set_visibility(self, video_id: int, visibility: str) -> Video:
         if visibility not in ("private", "unlisted", "public"):

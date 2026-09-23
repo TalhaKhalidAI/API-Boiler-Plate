@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>HLS Player</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #0f0f0f;
+    color: #eee;
+    font-family: system-ui, -apple-system, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 20px;
+    min-height: 100vh;
+  }
+  h1 {
+    font-weight: 500;
+    font-size: 18px;
+    margin: 0 0 20px;
+    color: #aaa;
+    letter-spacing: 0.5px;
+  }
+  .player-wrap {
+    width: 100%;
+    max-width: 900px;
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0,0,0,.6);
+  }
+  video {
+    width: 100%;
+    display: block;
+    background: #000;
+    aspect-ratio: 16 / 9;
+  }
+
+  /* ── Quality selector bar ───────────────────────────────────── */
+  .quality-bar {
+    display: none;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 16px;
+    max-width: 900px;
+    width: 100%;
+  }
+  .quality-bar.visible { display: flex; }
+
+  .quality-bar button {
+    background: #1a1a1a;
+    color: #ccc;
+    border: 1px solid #333;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    font-weight: 500;
+    letter-spacing: 0.3px;
+    transition: background .15s, color .15s, border-color .15s;
+    min-width: 64px;
+  }
+  .quality-bar button:hover {
+    background: #252525;
+    color: #fff;
+  }
+  .quality-bar button.active {
+    background: #3a6df0;
+    color: #fff;
+    border-color: #3a6df0;
+  }
+  .quality-bar button.auto {
+    background: #0a0a0a;
+    color: #888;
+  }
+  .quality-bar button.auto.active {
+    background: #3a6df0;
+    color: #fff;
+  }
+
+  /* ── Status line ────────────────────────────────────────────── */
+  .status {
+    font-size: 12px;
+    color: #666;
+    margin-top: 12px;
+    max-width: 900px;
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .status span { display: inline-block; }
+  .status .label { color: #444; margin-right: 6px; }
+  .status .value { color: #999; font-family: ui-monospace, monospace; }
+
+  /* ── Error overlay ──────────────────────────────────────────── */
+  .error {
+    color: #ff6b6b;
+    padding: 32px;
+    text-align: center;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  /* ── Small helper text ──────────────────────────────────────── */
+  .hint {
+    margin-top: 20px;
+    font-size: 12px;
+    color: #555;
+    max-width: 900px;
+    width: 100%;
+    text-align: center;
+  }
+  .hint kbd {
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    color: #999;
+  }
+</style>
+</head>
+<body>
+
+<h1>HLS Player</h1>
+
+<div class="player-wrap">
+  <video id="player" controls playsinline preload="metadata" crossorigin="anonymous"></video>
+</div>
+
+<div class="quality-bar" id="quality-bar">
+  <button class="auto active" data-level="-1">Auto</button>
+</div>
+
+<div class="status">
+  <span><span class="label">Status:</span><span class="value" id="status-text">loading…</span></span>
+  <span><span class="label">Bandwidth:</span><span class="value" id="bw-text">—</span></span>
+</div>
+
+<div class="hint">
+  Press <kbd>0</kbd>–<kbd>9</kbd> to switch quality · <kbd>A</kbd> for auto
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.15/dist/hls.min.js"></script>
+<script>
+  // ─── CHANGE THIS URL TO YOUR VIDEO ─────────────────────────────
+  const HLS_URL = "https://minio.lab.mli/python/channels/talha_videos/videos/talha-bad-dream-c3609968/final/hls/master.m3u8";
+  // ──────────────────────────────────────────────────────────────
+
+  const video      = document.getElementById('player');
+  const qualityBar = document.getElementById('quality-bar');
+  const statusText = document.getElementById('status-text');
+  const bwText     = document.getElementById('bw-text');
+
+  /** Sorted list of {height, bitrate, index} — highest first. */
+  let levels = [];
+
+  if (window.Hls && Hls.isSupported()) {
+    const hls = new Hls({
+      debug: false,
+      enableWorker: true,
+      lowLatencyMode: false,
+      startLevel: -1,                  // ABR picks first level
+      capLevelToPlayerSize: false,     // never downgrade just because player is small
+      abrEwmaDefaultEstimate: 1_000_000,
+    });
+
+    hls.loadSource(HLS_URL);
+    hls.attachMedia(video);
+
+    // ── Manifest loaded: build quality buttons ──────────────────
+    hls.on(Hls.Events.MANIFEST_PARSED, (_e, data) => {
+      console.log('✅ Manifest loaded. Renditions:');
+      data.levels.forEach((l, i) =>
+        console.log(`   [${i}] ${l.height}p @ ${Math.round(l.bitrate/1000)} kbps`));
+
+      // Sort levels by height descending, keep original index
+      levels = data.levels
+        .map((l, i) => ({ height: l.height, bitrate: l.bitrate, index: i }))
+        .sort((a, b) => b.height - a.height);
+
+      // Create a button per quality
+      levels.forEach((lvl) => {
+        const btn = document.createElement('button');
+        btn.textContent = `${lvl.height}p`;
+        btn.dataset.level = String(lvl.index);
+        btn.title = `${lvl.height}p @ ${Math.round(lvl.bitrate/1000)} kbps`;
+        btn.addEventListener('click', () => selectLevel(lvl.index));
+        qualityBar.appendChild(btn);
+      });
+
+      qualityBar.classList.add('visible');
+      statusText.textContent = `ready (${levels.length} renditions)`;
+    });
+
+    // ── Level changed: update status + button highlight ─────────
+    hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
+      const lvl = hls.levels[data.level];
+      if (!lvl) return;
+
+      if (hls.autoLevelEnabled) {
+        statusText.textContent = `auto → ${lvl.height}p`;
+        setActiveButton('-1');
+      } else {
+        statusText.textContent = `${lvl.height}p @ ${Math.round(lvl.bitrate/1000)} kbps`;
+        setActiveButton(String(data.level));
+      }
+    });
+
+    // ── Bandwidth estimate updates ──────────────────────────────
+    hls.on(Hls.Events.FRAG_LOADED, () => {
+      const bw = hls.bandwidthEstimate;
+      if (bw) {
+        const mbps = (bw / 1_000_000).toFixed(2);
+        bwText.textContent = `${mbps} Mbps`;
+      }
+    });
+
+    // ── Errors ──────────────────────────────────────────────────
+    hls.on(Hls.Events.ERROR, (_e, data) => {
+      console.error('❌ hls.js error:', data);
+      if (!data.fatal) return;
+
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+        console.warn('Network error — retrying');
+        statusText.textContent = 'network error — retrying';
+        hls.startLoad();
+      } else if (data.type === Hls.Events.ERROR && data.details === 'bufferStalledError') {
+        statusText.textContent = 'buffer stalled';
+      } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        console.warn('Media error — recovering');
+        hls.recoverMediaError();
+      } else {
+        document.querySelector('.player-wrap').innerHTML =
+          `<div class="error">Fatal playback error: <strong>${data.details}</strong><br>Check the browser console.</div>`;
+        hls.destroy();
+      }
+    });
+
+    // ── Helpers ─────────────────────────────────────────────────
+    function selectLevel(index) {
+      // currentLevel = -1  → auto ABR
+      // currentLevel >= 0  → locked to that level
+      hls.currentLevel = index;
+    }
+
+    function setActiveButton(levelStr) {
+      document.querySelectorAll('#quality-bar button').forEach(b => {
+        b.classList.toggle('active', b.dataset.level === levelStr);
+      });
+    }
+
+    // Auto button
+    document.querySelector('.quality-bar button.auto')
+      .addEventListener('click', () => selectLevel(-1));
+
+    // ── Keyboard shortcuts ──────────────────────────────────────
+    // 0 = highest quality, 9 = lowest, A = auto
+    document.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+      if (e.key.toLowerCase() === 'a') {
+        selectLevel(-1);
+        return;
+      }
+      const n = parseInt(e.key, 10);
+      if (!isNaN(n) && n >= 0 && n <= 9) {
+        // Map 0 → highest (levels[0]), 1 → next, etc.
+        const target = levels[n];
+        if (target) selectLevel(target.index);
+      }
+    });
+
+  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    // Safari / iOS — native HLS, no hls.js
+    video.src = HLS_URL;
+    statusText.textContent = 'native HLS (Safari)';
+    bwText.textContent = '—';
+    // Note: native playback handles quality automatically;
+    // the ABR selector isn't available via JS on Safari.
+  } else {
+    document.querySelector('.player-wrap').innerHTML =
+      '<div class="error">Your browser does not support HLS playback.</div>';
+  }
+</script>
+</body>
+</html>

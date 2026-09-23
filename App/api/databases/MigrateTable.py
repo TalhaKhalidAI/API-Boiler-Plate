@@ -138,9 +138,10 @@ class Video(Base):
         String(500), nullable=False, server_default="master.m3u8"
     )
 
-    status = Column(String(20), nullable=False, server_default="processing")
+    status = Column(String(20), nullable=False, server_default="pending")
     visibility = Column(String(20), nullable=False, server_default="private")
-
+    processing_started_at = Column(DateTime(timezone=True), nullable=True)
+    failure_reason = Column(Text, nullable=True)
     view_count = Column(BigInteger, nullable=False, server_default="0")
     like_count = Column(BigInteger, nullable=False, server_default="0")
     dislike_count = Column(BigInteger, nullable=False, server_default="0")
@@ -198,8 +199,14 @@ class Video(Base):
         Index("ix_videos_status", "status"),
         Index("ix_videos_visibility_published_at", "visibility", "published_at"),
         Index("ix_videos_deleted_at", "deleted_at"),
+        # ─── ADD THIS ───
+        Index(
+            "ix_videos_processing_started_at",
+            "processing_started_at",
+            postgresql_where=text("status = 'processing'"),
+        ),
+        # ────────────────
     )
-
 
 # =====================================================================
 # VIDEO VARIANTS

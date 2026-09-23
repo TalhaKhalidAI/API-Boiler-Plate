@@ -122,6 +122,45 @@ class AuthService:
             "user.history.delete": True,
             "user.self.enable": True,
             "user.disable.self": True,
+                # ===== USER SELF-MANAGEMENT =====
+            "user.view.self": True,
+            "user.update.self": True,
+            "user.update.email": True,
+            "user.update.password": True,
+            "user.update.profile": True,
+            "user.delete.self": True,
+            "user.history.view": True,
+            "user.history.delete": True,
+            "user.self.enable": True,
+            "user.disable.self": True,
+
+            # ===== CHANNEL (own channel only) =====
+            "channel.create.self": True,
+            "channel.update.self": True,
+            "channel.delete.self": True,
+            "channel.self.enable": True,
+            "channel.self.disable": True,
+            "channel.members.manage.self": True,
+
+            # ===== VIDEO (own channel only) =====
+            "video.create.self": True,
+            "video.update.self": True,
+            "video.delete.self": True,
+            "video.publish.self": True,
+
+            # ===== PLAYLIST (own playlists only) =====
+            "playlist.create.self": True,
+            "playlist.update.self": True,
+            "playlist.delete.self": True,
+
+            # ===== COMMENT =====
+            "comment.create.self": True,
+            "comment.update.self": True,
+            "comment.delete.self": True,
+            "comment.pin.self": True,
+
+            # ===== SUBSCRIPTION =====
+            "subscription.create.self": True,
         }
 
         return await repo.create(user_dict)

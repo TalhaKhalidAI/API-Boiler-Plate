@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
+from sqlalchemy.exc import IntegrityError as SAIntegrityError
 from App.api.v1 import app_router
 from App.core.settings import settings
 from App.core.LoggingInit import get_core_logger
@@ -37,6 +38,7 @@ from App.core.exceptions import (
     DomainError, InfrastructureError,
     UserNotFoundError, DuplicateEmailError, DuplicateNameError,MinIOError,PermissionDeniedError,IntegrityError
 )
+from App.core.bucket_policy import build_default_bucket_policy
 from redis.exceptions import RedisError
 
 logger = get_core_logger(__name__)
@@ -45,43 +47,108 @@ logger = get_core_logger(__name__)
 # ============================================================================
 # Lifespan
 # ============================================================================
+# @asynccontextmanager
+# async def lifespan(app: FastAPI):
+#     # Admin seeding moved to an Alembic data migration.
+#     # See App/api/databases/migrations/versions/<...>_seed_admin.py.
+#     # If you haven't migrated yet, keep the call but wrap it in try/except
+#     # so a race between workers doesn't kill startup. See CreateAdmin.py.
+#     try:
+#         await create_admin()
+#     except Exception:
+#         # Non-fatal: another worker may have already created the admin,
+#         # or the migration already seeded it. Log and continue.
+#         logger.exception("Admin seed skipped (likely already done)")
+
+#     try:
+#         await redis_client.connect()
+#         logger.info("App started")
+#     except Exception:
+#         logger.exception("Redis unavailable during startup; continuing in degraded mode")
+#         logger.warning("App started in degraded mode without Redis")
+#     try:
+#         minio_storage.connect()
+#         health = await minio_storage.health_check()
+#         if health["connected"]:
+#             logger.info("MinIO connected")
+#         else:
+#             logger.warning(f"MinIO unreachable at startup: {health.get('error')}")
+#     except Exception:
+#         logger.exception("MinIO init failed; object storage may be unavailable")
+#     yield
+
+#     # Graceful shutdown: close DB pool then Redis
+#     minio_storage.disconnect()
+#     await database.disconnect()
+#     await redis_client.disconnect()
+#     logger.info("App stopped")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Admin seeding moved to an Alembic data migration.
-    # See App/api/databases/migrations/versions/<...>_seed_admin.py.
-    # If you haven't migrated yet, keep the call but wrap it in try/except
-    # so a race between workers doesn't kill startup. See CreateAdmin.py.
+    # ---------------------------------------------------------------
+    # Admin seeding
+    # ---------------------------------------------------------------
     try:
         await create_admin()
     except Exception:
-        # Non-fatal: another worker may have already created the admin,
-        # or the migration already seeded it. Log and continue.
         logger.exception("Admin seed skipped (likely already done)")
 
+    # ---------------------------------------------------------------
+    # Redis
+    # ---------------------------------------------------------------
     try:
         await redis_client.connect()
-        logger.info("App started")
+        logger.info("Redis connected")
     except Exception:
         logger.exception("Redis unavailable during startup; continuing in degraded mode")
-        logger.warning("App started in degraded mode without Redis")
+
+    # ---------------------------------------------------------------
+    # MinIO — connect + apply public-read bucket policy
+    # ---------------------------------------------------------------
     try:
         minio_storage.connect()
         health = await minio_storage.health_check()
-        if health["connected"]:
-            logger.info("MinIO connected")
-        else:
+        if not health["connected"]:
             logger.warning(f"MinIO unreachable at startup: {health.get('error')}")
+        else:
+            logger.info("MinIO connected")
+
+            # Ensure bucket exists, then apply the public-read policy for
+            # HLS manifests + segments + thumbnails + avatars.
+            # Without this, anonymous browser playback of HLS returns 403.
+            bucket = settings.MINIO_DEFAULT_BUCKET
+            try:
+                await minio_storage.ensure_bucket(bucket)
+                policy = build_default_bucket_policy(bucket)
+                await minio_storage.set_bucket_policy(bucket, policy)
+                logger.info(f"Bucket policy applied to {bucket}")
+            except Exception:
+                logger.exception(f"Failed to apply bucket policy to {bucket}")
     except Exception:
         logger.exception("MinIO init failed; object storage may be unavailable")
+
+    logger.info("App started")
     yield
 
-    # Graceful shutdown: close DB pool then Redis
-    minio_storage.disconnect()
-    await database.disconnect()
-    await redis_client.disconnect()
+    # ---------------------------------------------------------------
+    # Graceful shutdown (order: MinIO → DB → Redis)
+    # ---------------------------------------------------------------
+    try:
+        minio_storage.disconnect()
+    except Exception:
+        logger.exception("MinIO disconnect failed")
+
+    try:
+        await database.disconnect()
+    except Exception:
+        logger.exception("DB disconnect failed")
+
+    try:
+        await redis_client.disconnect()
+    except Exception:
+        logger.exception("Redis disconnect failed")
+
     logger.info("App stopped")
-
-
 app = FastAPI(
     title="API Basic Boilerplate",
     version="0.0.1",
@@ -336,6 +403,23 @@ async def integrity_error_handler(request: Request, exc: IntegrityError):
     req_id = getattr(request.state, "request_id", "-")
     constraint = getattr(getattr(exc, "orig", None), "diag", None)
     constraint_name = getattr(constraint, "constraint_name", None) if constraint else None
+    logger.warning(f"[{req_id}] IntegrityError constraint={constraint_name}")
+    return JSONResponse(
+        status_code=409,
+        content={
+            "error": "conflict",
+            "message": "Resource already exists or violates a constraint",
+            "constraint": constraint_name,
+            "status": 409,
+            "request_id": req_id,
+        },
+    )
+
+@app.exception_handler(SAIntegrityError)
+async def integrity_error_handler(request: Request, exc: SAIntegrityError):
+    req_id = getattr(request.state, "request_id", "-")
+    diag = getattr(getattr(exc, "orig", None), "diag", None)
+    constraint_name = getattr(diag, "constraint_name", None) if diag else None
     logger.warning(f"[{req_id}] IntegrityError constraint={constraint_name}")
     return JSONResponse(
         status_code=409,
