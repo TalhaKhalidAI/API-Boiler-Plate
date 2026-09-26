@@ -3,6 +3,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import SecretStr, Field, PostgresDsn, field_validator
 from typing import Optional, Any
 import os
+from urllib.parse import quote_plus
+
 from App.core.size_parser import parse_size
 
 
@@ -231,11 +233,10 @@ class Settings(BaseSettings):
             # Fallback if no unit provided
             return f"{v_str}/minute"
         return v_str
-    
     @property
     def database_url(self) -> str:
         """Get PostgreSQL database URL"""
-        password = self.DATABASE_PASSWORD.get_secret_value()
+        password = quote_plus(self.DATABASE_PASSWORD.get_secret_value())
         
         # Construct the URL
         url = (
@@ -262,7 +263,7 @@ class Settings(BaseSettings):
     @property
     def sync_database_url(self) -> str:
         """Get sync PostgreSQL database URL (for Alembic)"""
-        password = self.DATABASE_PASSWORD.get_secret_value()
+        password = quote_plus(self.DATABASE_PASSWORD.get_secret_value())
         
         url = (
             f"postgresql://"

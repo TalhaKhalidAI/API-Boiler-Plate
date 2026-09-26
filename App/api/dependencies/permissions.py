@@ -35,9 +35,9 @@ def require_permission(
         if bypass_admin and current_user.get('role') == 'admin':
             return current_user
 
-        if current_user.get("types") == "slts":
-            logger.debug(f"🔓 SLT token bypass for {current_user.get('email')}")
-            return current_user
+        # if current_user.get("types") == "slts":
+        #     logger.debug(f"🔓 SLT token bypass for {current_user.get('email')}")
+        #     return current_user
 
 
         # ============================================================

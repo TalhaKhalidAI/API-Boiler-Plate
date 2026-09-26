@@ -15,7 +15,7 @@ from App.api.dependencies.auth import (
     validate_password_strength,
 )
 from App.core import token_store
-from App.core.exceptions import DomainError, DuplicateEmailError,RateLimitError
+from App.core.exceptions import DomainError, DuplicateEmailError,RateLimitError,InfrastructureError
 from App.core.settings import settings
 from App.repository.UserRepository import UserRepository
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,12 +29,15 @@ class AuthService:
     async def login_user(self, username: str, password: str,ip: str = "unknown",) -> Optional[Dict[str, Any]]:
         """Authenticate and issue both tokens for a valid user."""
 
-        allowed = await token_store.check_login_rate(
-            identifier=username,
-            ip=ip,
-            max_attempts=settings.MAX_LOGIN_ATTEMPTS or 4,
-            window=300,
-        )
+        try:
+            allowed = await token_store.check_login_rate(
+                identifier=username,
+                ip=ip,
+                max_attempts=settings.MAX_LOGIN_ATTEMPTS or 4,
+                window=300,
+            )
+        except (RedisError, RuntimeError) as exc:
+            raise InfrastructureError("Redis unavailable during login") from exc
         if not allowed:
             raise RateLimitError("Too many login attempts. Try again in a few minutes.")
         user = await authenticate_user(username, password, self.db)
@@ -77,13 +80,9 @@ class AuthService:
                 user_id=user["id"],
                 family_id=family_id,
                 ttl=settings.REFRESH_TOKEN_TTL_SECONDS,
-            )
-        except RedisError as exc:
-            raise RuntimeError("Redis unavailable during login") from exc
-        except RuntimeError as exc:
-            raise RuntimeError("Redis unavailable during login") from exc
-        except Exception as exc:
-            raise RuntimeError("Redis unavailable during login") from exc
+                    )
+        except (RedisError, RuntimeError) as exc:
+            raise InfrastructureError("Redis unavailable during login") from exc
 
         return {
             "user": user,
@@ -160,9 +159,8 @@ class AuthService:
                 if user_id:
                     await token_store.forget_family_for_user(user_id, family)
             return True
-        except RedisError as exc:
-            raise RuntimeError("Redis unavailable during logout") from exc
-
+        except (RedisError, RuntimeError) as exc:
+            raise InfrastructureError("Redis unavailable during logout") from exc
     # ========================================================================
     # NEW: revoke ALL sessions for a user (logout-everywhere)
     # ========================================================================
@@ -188,5 +186,5 @@ class AuthService:
 
           
             return len(families)
-        except RedisError as exc:
-            raise RuntimeError("Redis unavailable during logout-everywhere") from exc
+        except (RedisError, RuntimeError) as exc:
+            raise InfrastructureError("Redis unavailable during logout-everywhere") from exc

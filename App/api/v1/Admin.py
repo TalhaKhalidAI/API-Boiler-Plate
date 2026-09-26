@@ -37,6 +37,7 @@ from App.core.exceptions import (
     UserNotFoundError,
     DuplicateEmailError,
     AccountAlreadyDisabledError,
+    PermissionDeniedError
 )
 from App.schemas.AuthScheema import UserResponse, PasswordConfirmRequest,PasswordUpdateRequest
 from App.models.UserAuthModel import UpdateUser
@@ -154,7 +155,7 @@ async def disable_account(
 ):
     req_id = getattr(request.state, "request_id", "-")
     try:
-        pwd = payload.password if payload else None
+        pwd = payload.password.get_secret_value() if payload and payload.password else None
         service = AdminService(db)
         result = await service.disable_account(user_id, pwd, current_user)
         logger.info(f"[{req_id}] User {current_user.get('id')} disabled user {user_id}")
@@ -218,7 +219,7 @@ async def enable_account(
 
     except HTTPException:
         raise
-    except PermissionError as e:
+    except PermissionDeniedError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
@@ -477,7 +478,7 @@ async def update_password(
             user_id=user_id,
             new_password=passwd.new_password.get_secret_value(),
             current_user=current_user,
-            old_password=passwd.old_password.get_secret_value(),
+            old_password=passwd.old_password.get_secret_value() if passwd.old_password else None,
         )
         logger.info(f"[{req_id}] Password update processed for user {user_id}")
         return result

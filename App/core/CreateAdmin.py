@@ -65,11 +65,13 @@ async def create_admin():
                     "admin.settings.view": True,
                     "admin.settings.update": True,
                     "admin.view_all": True,
+                    "admin.system.kill_switch": True,
                 }
             )
             
             if admin:
                 print(f"✅ Admin user created or already exists: {admin.email}")
+                await session.commit()  
             else:
                 print("❌ Failed to create admin")
                 

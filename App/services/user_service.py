@@ -5,9 +5,14 @@ from App.api.dependencies.auth import (
     decode_jwt_ignore_expiry,
     refresh_access_token,
 )
-from App.core.exceptions import DomainError, UserNotFoundError
-from App.repository.UserRepository import UserRepository
+ 
 
+from App.core.LoggingInit import get_core_logger
+from fastapi import UploadFile
+from App.core.exceptions import DomainError, UserNotFoundError,ValidationError,PermissionDeniedError
+from App.repository.UserRepository import UserRepository
+from App.core.settings import settings
+logger = get_core_logger(__name__)
 
 class UserService:
     """Application business logic for user self-service and admin read flows."""

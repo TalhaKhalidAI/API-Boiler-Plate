@@ -22,7 +22,7 @@ class UpdateUser(BaseModel):
     email: EmailStr | None = None
     password: str | None = None
     profile_pic: str | None = None
-    disable: bool | None = None
+    disabled: bool | None = None
     user_role: str | None = None
 
 class UserResponse(BaseModel):

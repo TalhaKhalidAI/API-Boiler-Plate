@@ -73,20 +73,20 @@ def resolve_client_ip(request: Request) -> str:
     """
     Trusted-proxy-aware client IP resolution.
 
-    The peer address (request.client.host) is authoritative unless that peer
-    is a trusted proxy. XFF is honored only in that case. This is the single
-    source of truth — the rate limiter and the login rate limit both use it.
+    When the immediate peer is a trusted proxy, walk X-Forwarded-For
+    right-to-left, skipping trusted hops. The first non-trusted hop
+    is the real client.
     """
     peer = request.client.host if request.client else "unknown"
 
     if not _is_trusted_peer(peer):
         return peer
 
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        # Standard convention (nginx, AWS ALB, Cloudflare): the leftmost entry
-        # is the original client.
-        return xff.split(",")[0].strip()
+    xff = request.headers.get("x-forwarded-for", "")
+    hops = [h.strip() for h in xff.split(",") if h.strip()]
+    for hop in reversed(hops):
+        if not _is_trusted_peer(hop):
+            return hop
 
     real_ip = request.headers.get("x-real-ip")
     if real_ip:

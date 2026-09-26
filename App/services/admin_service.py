@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from App.api.dependencies.auth import create_short_live_token, get_password_hash, verify_password
 from App.core.RedisConnector import redis_client
-from App.core.exceptions import DomainError, UserNotFoundError,AccountAlreadyDisabledError,PasswordRequiredError,IncorrectPasswordError
+from App.core.exceptions import DomainError, UserNotFoundError,AccountAlreadyDisabledError,PasswordRequiredError,IncorrectPasswordError,PermissionDeniedError,ValidationError,DuplicateEmailError
 from App.models.Permissions import Permission
 from App.repository.UserRepository import UserRepository
 
@@ -62,31 +62,31 @@ class AdminService:
         elif is_self and has_self_update_permission:
             pass
         else:
-            raise PermissionError("You don't have permission to update this user's account")
+            raise PermissionDeniedError("You don't have permission to update this user's account")
 
         update_dict = update_data.model_dump(exclude_unset=True)
         if not update_dict:
-            raise ValueError("No fields to update")
+            raise ValidationError("No fields to update")
 
         sensitive_fields = ["user_role", "disabled", "is_active"]
         if not (is_admin or has_admin_update_permission):
             for field in sensitive_fields:
                 if field in update_dict:
-                    raise PermissionError(
+                    raise PermissionDeniedError(
                         f"Only admin or users with admin permissions can update '{field}'"
                     )
 
         if is_admin and is_self:
             for locked_field in ("user_role", "permissions", "disabled", "is_active"):
                 if locked_field in update_dict:
-                    raise PermissionError(
+                    raise PermissionDeniedError(
                         f"Admin cannot change their own '{locked_field}'"
                     )
 
         if "email" in update_dict and update_dict["email"] != target_user.email:
             existing = await repo.get_by_email(update_dict["email"])
             if existing and existing.id != user_id:
-                raise ValueError("Email already in use")
+                raise DuplicateEmailError("Email already in use")
 
         if "password" in update_dict:
             update_dict["password_hash"] = get_password_hash(update_dict["password"])
@@ -94,6 +94,7 @@ class AdminService:
 
         updated_user = await repo.update(user_id, update_dict)
         return updated_user
+
 
     async def disable_account(
         self,
@@ -118,11 +119,24 @@ class AdminService:
         has_restore_permission = current_user_perms.get("admin.users.restore", False)
         has_self_disable = current_user_perms.get("user.disable.self", False)
 
-        can_disable_any = is_admin or has_promote_permission or has_restore_permission
-        can_disable_self = is_self and has_self_disable
+        # ← FIX 1: Admins must NEVER disable themselves.
+        # A disabled user cannot authenticate (get_current_user rejects them at the
+        # gate), so the only way back in is an SLT issued by *another* admin. If
+        # the self-disabling admin is the last admin, the system is bricked until
+        # someone with direct DB access flips the row by hand.
+        if is_self and is_admin:
+            raise PermissionDeniedError(
+                "Admins cannot disable their own account. Ask another admin to do it."
+            )
 
-        # Admin / delegated — disabling *someone else*: no password required.
-        if can_disable_any and not is_self:
+        can_disable_any = is_admin or has_promote_permission or has_restore_permission
+
+        # ── Path 1: disable someone else ────────────────────────────────────────
+        if not is_self:
+            if not can_disable_any:
+                raise PermissionDeniedError(
+                    "You don't have permission to disable this account"
+                )
             # Repository raises AccountAlreadyDisabledError if already disabled.
             await repo.disable_account(user_id)
             return {
@@ -131,22 +145,26 @@ class AdminService:
                 "disabled_by": "admin_or_permission",
             }
 
-        # Self-disable path — always requires password, even for admins.
-        if is_self and (can_disable_self or can_disable_any):
-            if target_user.disabled:
-                raise AccountAlreadyDisabledError(f"User {user_id} is already disabled")
-            if not password:
-                raise PasswordRequiredError("Password required to disable your own account")
-            if not verify_password(password, target_user.password_hash):
-                raise IncorrectPasswordError("Incorrect password")
-            await repo.disable_account(user_id)
-            return {
-                "status": "success",
-                "user_id": user_id,
-                "disabled_by": "self",
-            }
+        # ── Path 2: disable self (non-admin only, admin case already rejected) ──
+        # ← FIX 2: reachable only when is_self AND NOT is_admin.
+        # Requires the user.disable.self permission AND password confirmation.
+        if not has_self_disable:
+            raise PermissionDeniedError(
+                "You don't have permission to disable your own account"
+            )
+        if target_user.disabled:
+            raise AccountAlreadyDisabledError(f"User {user_id} is already disabled")
+        if not password:
+            raise PasswordRequiredError("Password required to disable your own account")
+        if not verify_password(password, target_user.password_hash):
+            raise IncorrectPasswordError("Incorrect password")
 
-        raise PermissionError("Insufficient permissions to disable this account")
+        await repo.disable_account(user_id)
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "disabled_by": "self",
+        }
 
     async def enable_account(
         self,
@@ -173,9 +191,9 @@ class AdminService:
         # ---- Authorization ----
         if is_slt_token:
             if current_user.get("token_purpose") != "account_restoration":
-                raise PermissionError("SLT token is not valid for account enablement")
+                raise PermissionDeniedError("SLT token is not valid for account enablement")
             if cur_id != user_id:
-                raise PermissionError(
+                raise PermissionDeniedError(
                     f"SLT token can only enable user {cur_id}, not {user_id}"
                 )
         elif can_enable_any:
@@ -185,7 +203,7 @@ class AdminService:
             # Self-enable — only if the caller is targeting themselves.
             pass
         else:
-            raise PermissionError("You don't have permission to enable this account")
+            raise PermissionDeniedError("You don't have permission to enable this account")
 
         # ---- State checks ----
         target_user = await repo.get_by_id(user_id)
@@ -200,7 +218,7 @@ class AdminService:
         if is_slt_token:
             success = await repo.full_restore(user_id)
             if not success:
-                raise RuntimeError("Failed to enable account with SLT token")
+                raise DomainError("Failed to enable account with SLT token")
             return {
                 "status": "success",
                 "message": f"Account {user_id} enabled via SLT token",
@@ -214,7 +232,7 @@ class AdminService:
             enabled_by = "Admin" if is_admin else "User with permission"
             success = await repo.full_restore(user_id)
             if not success:
-                raise RuntimeError("Failed to enable user account")
+                raise DomainError("Failed to enable user account")
             return {
                 "status": "success",
                 "message": f"User {user_id} enabled by {enabled_by.lower()}",
@@ -231,7 +249,7 @@ class AdminService:
                 raise IncorrectPasswordError("Incorrect password")
             success = await repo.full_restore(user_id)
             if not success:
-                raise RuntimeError("Failed to enable your account")
+                raise DomainError("Failed to enable your account")
             return {
                 "status": "success",
                 "message": "Your account has been enabled successfully",
@@ -242,13 +260,13 @@ class AdminService:
 
         # Shouldn't reach here — the authz block above already rejected the
         # cases that could.
-        raise PermissionError("You don't have permission to enable this account")
+        raise PermissionDeniedError("You don't have permission to enable this account")
 
     async def temp_token_maker(self, user_id: int, current_user: Dict[str, Any], db, cookie_login: bool, restore_passwd: bool):
         repo = UserRepository(self.db)
 
         if current_user.get("role") != "admin":
-            raise PermissionError("Only admin can access this")
+            raise PermissionDeniedError("Only admin can access this")
 
         target_user = await repo.get_by_id(user_id)
         if not target_user:
@@ -260,7 +278,7 @@ class AdminService:
             pass
         else:
             if not (target_user.disabled or not target_user.is_active or target_user.is_deleted):
-                raise ValueError("User is already active and valid. No restoration needed.")
+                raise ValidationError("User is already active and valid. No restoration needed.")
 
         temp_token = await create_short_live_token(user_id, self.db, purpose=token_purpose)
 
@@ -295,12 +313,11 @@ class AdminService:
         }
 
     async def reset_auto_kill(self, current_user: Dict[str, Any]):
-        if current_user.get("role") != "admin":
-            raise PermissionError("Only administrators can reset the safety mode")
-
-        c = await redis_client.ensure_connected()
-        await c.delete("kill_switch:auto_kill_until")
-        return {"status": "success", "message": "System safety mode has been reset."}
+        perms = self._normalize_permissions(current_user.get("permissions", {}))
+        is_admin = current_user.get("role") == "admin"
+        has_permission = perms.get("admin.system.kill_switch", False)
+        if not (is_admin or has_permission):
+            raise PermissionDeniedError("Only administrators can reset the safety mode")
 
     async def delete_account(self, user_id: int, password: Optional[str], current_user: Dict[str, Any]):
         repo = UserRepository(self.db)
@@ -322,12 +339,12 @@ class AdminService:
             if not target_user:
                 raise UserNotFoundError(f"User {user_id} not found")
             if target_user.is_deleted:
-                raise ValueError("User is already deleted")
+                raise ValidationError("User is already deleted")
             if is_self_deletion:
-                raise PermissionError("You cannot delete your own account")
+                raise PermissionDeniedError("You cannot delete your own account")
             success = await repo.delete_account(user_id)
             if not success:
-                raise RuntimeError("Failed to delete user account")
+                raise DomainError("Failed to delete user account")
             return {
                 "status": "success",
                 "message": f"User {user_id} deleted by {current_user.get('email')}",
@@ -338,20 +355,20 @@ class AdminService:
             if not target_user:
                 raise UserNotFoundError(f"User {user_id} not found")
             if target_user.is_deleted:
-                raise ValueError("User is already deleted")
+                raise ValidationError("User is already deleted")
             if not password:
-                raise ValueError("Password required for self-deletion")
+                raise ValidationError("Password required for self-deletion")
             if not verify_password(password, target_user.password_hash):
-                raise PermissionError("Incorrect password")
+                raise PermissionDeniedError("Incorrect password")
             success = await repo.delete_account(user_id)
             if not success:
-                raise RuntimeError("Failed to delete your account")
+                raise DomainError("Failed to delete your account")
             return {
                 "status": "success",
                 "message": "Your account has been soft deleted",
             }
 
-        raise PermissionError("You don't have permission to delete this account")
+        raise PermissionDeniedError("You don't have permission to delete this account")
 
     async def restore_account(self, user_id: int, current_user: Dict[str, Any]):
         repo = UserRepository(self.db)
@@ -368,22 +385,22 @@ class AdminService:
 
         if is_slt_token:
             if current_user.get("token_purpose") != "account_restoration":
-                raise PermissionError("SLT token is not valid for account restoration")
+                raise PermissionDeniedError("SLT token is not valid for account restoration")
             slt_user_id = current_user.get("id")
             if slt_user_id != user_id:
-                raise PermissionError(f"SLT token can only restore user {slt_user_id}, not {user_id}")
+                raise PermissionDeniedError(f"SLT token can only restore user {slt_user_id}, not {user_id}")
 
             target_user = await repo.get_by_id(user_id)
             if not target_user:
                 raise UserNotFoundError(f"User {user_id} not found")
             if not target_user.is_deleted and not target_user.disabled and target_user.is_active:
-                raise ValueError("User is already active. No restoration needed.")
+                raise ValidationError("User is already active. No restoration needed.")
 
             success = await repo.restore_deleted(user_id)
             if not success:
                 success = await repo.restore_disable(user_id)
             if not success:
-                raise RuntimeError("Failed to restore account with SLT token")
+                raise DomainError("Failed to restore account with SLT token")
             return {
                 "status": "success",
                 "message": f"Account {user_id} restored via SLT token",
@@ -393,13 +410,13 @@ class AdminService:
             }
 
         if not can_restore_any:
-            raise PermissionError("You don't have permission to restore accounts")
+            raise PermissionDeniedError("You don't have permission to restore accounts")
 
         target_user = await repo.get_by_id(user_id)
         if not target_user:
             raise UserNotFoundError(f"User {user_id} not found")
         if not target_user.is_deleted and not target_user.disabled and target_user.is_active:
-            raise ValueError("User is already active. No restoration needed.")
+            raise ValidationError("User is already active. No restoration needed.")
 
         success = False
         if target_user.is_deleted:
@@ -407,7 +424,7 @@ class AdminService:
         if not success:
             success = await repo.restore_disable(user_id)
         if not success:
-            raise RuntimeError("Failed to restore user account")
+            raise DomainError("Failed to restore user account")
 
         restored_by = "Admin" if is_admin else "User with permission"
         return {
@@ -441,15 +458,15 @@ class AdminService:
 
         if is_slt_token:
             if current_user.get("token_purpose") != "password_restore":
-                raise PermissionError("SLT token is not valid for password reset")
+                raise PermissionDeniedError("SLT token is not valid for password reset")
             if slt_user_id != user_id:
-                raise PermissionError(
+                raise PermissionDeniedError(
                     f"SLT token can only update password for user {slt_user_id}, not {user_id}"
                 )
             new_hash = get_password_hash(new_password)
             success = await repo.update_password_hash(user_id, new_hash)
             if not success:
-                raise RuntimeError("Failed to update password with SLT token")
+                raise DomainError("Failed to update password with SLT token")
             return {
                 "status": "success",
                 "message": f"Password updated via SLT token for user {user_id}",
@@ -462,7 +479,7 @@ class AdminService:
             new_hash = get_password_hash(new_password)
             success = await repo.update_password_hash(user_id, new_hash)
             if not success:
-                raise RuntimeError("Failed to update password")
+                raise DomainError("Failed to update password")
             updated_by = "Admin" if is_admin else "User with admin permission"
             return {
                 "status": "success",
@@ -474,13 +491,13 @@ class AdminService:
 
         if can_update_self:
             if not old_password:
-                raise ValueError("Old password is required to change your password")
+                raise ValidationError("Old password is required to change your password")
             if not verify_password(old_password, target_user.password_hash):
-                raise PermissionError("Incorrect old password")
+                raise PermissionDeniedError("Incorrect old password")
             new_hash = get_password_hash(new_password)
             success = await repo.update_password_hash(user_id, new_hash)
             if not success:
-                raise RuntimeError("Failed to update your password")
+                raise DomainError("Failed to update your password")
             return {
                 "status": "success",
                 "message": "Your password has been updated successfully",
@@ -489,7 +506,7 @@ class AdminService:
                 "updated_by": "Self",
             }
 
-        raise PermissionError("You don't have permission to update this user's password")
+        raise PermissionDeniedError("You don't have permission to update this user's password")
 
     async def get_all_permissions(self):
         return [{"name": p.name, "value": p.value} for p in Permission]
@@ -499,7 +516,7 @@ class AdminService:
         uid = current_user.get("id")
 
         if uid == pm.user_id:
-            raise PermissionError("You cannot update your own permissions")
+            raise PermissionDeniedError("You cannot update your own permissions")
 
         target = await repo.get_by_id(pm.user_id)
         if not target:
@@ -518,7 +535,7 @@ class AdminService:
 
         has_promote = (current_user.get("permissions") or {}).get("admin.users.promote", False)
         if not has_promote:
-            raise PermissionError("You don't have permission to set permissions. Need admin.users.promote.")
+            raise PermissionDeniedError("You don't have permission to set permissions. Need admin.users.promote.")
 
         user_ids = [p.user_id for p in bulk_pm.all_user_permissions]
         existing_users = await repo.get_by_ids(user_ids)
@@ -529,7 +546,7 @@ class AdminService:
 
         current_user_id = current_user.get("id")
         if current_user_id in user_ids:
-            raise PermissionError("You cannot update your own permissions")
+            raise PermissionDeniedError("You cannot update your own permissions")
 
         updated_users = []
         for perm_update in bulk_pm.all_user_permissions:
@@ -548,7 +565,7 @@ class AdminService:
                 }
             )
 
-        await self.db.commit()
+        # await self.db.commit()
 
         return {
             "status": "success",
@@ -578,7 +595,7 @@ class AdminService:
         else:
             is_viewing_self = user_id == current_user_id
             if not is_viewing_self and not can_view_any:
-                raise PermissionError(
+                raise PermissionDeniedError(
                     "You don't have permission to view other users' permissions. Need admin.users.promote or admin.settings.view."
                 )
             target_user_id = user_id
@@ -611,13 +628,13 @@ class AdminService:
         elif is_self and has_promote:
             pass
         else:
-            raise PermissionError("You don't have permission to delete permissions")
+            raise PermissionDeniedError("You don't have permission to delete permissions")
 
         if is_admin and is_self:
-            raise PermissionError("Admin cannot delete their own permissions")
+            raise PermissionDeniedError("Admin cannot delete their own permissions")
         if is_self and not is_admin:
             if data.permission_keys and "admin.users.promote" in data.permission_keys:
-                raise PermissionError("You cannot remove your own admin.users.promote permission")
+                raise PermissionDeniedError("You cannot remove your own admin.users.promote permission")
 
         target_perms = target.permissions or {}
         if isinstance(target_perms, str):
@@ -629,7 +646,7 @@ class AdminService:
         removed_count: Any = 0
         if data.remove_all:
             if not target_perms:
-                raise ValueError("User has no permissions to delete")
+                raise ValidationError("User has no permissions to delete")
             updated = await repo.remove_all_permissions(data.user_id)
             message = f"All permissions removed for user {target.email}"
             removed_count = "all"
@@ -638,7 +655,7 @@ class AdminService:
             existing_keys = [k for k in data.permission_keys if k in target_perms]
             missing_keys = [k for k in data.permission_keys if k not in target_perms]
             if not existing_keys:
-                raise ValueError(f"Permissions not found: {', '.join(missing_keys)}")
+                raise ValidationError(f"Permissions not found: {', '.join(missing_keys)}")
             updated = await repo.remove_permissions(data.user_id, existing_keys)
             message = f"Permissions removed for user {target.email}: {existing_keys}"
             if missing_keys:
@@ -646,7 +663,7 @@ class AdminService:
             removed_count = len(existing_keys)
 
         else:
-            raise ValueError("Either permission_keys or remove_all must be provided")
+            raise ValidationError("Either permission_keys or remove_all must be provided")
 
         return {
             "status": "success",

@@ -15,6 +15,14 @@ from taking the entire API offline.
 Redis-backed state means multiple workers share the same auto-kill flag.
 Whitelisted paths (/health, /docs, etc.) always pass through.
 
+NOTE: because main.py registers global exception handlers for
+SQLAlchemyError / RedisError / InfrastructureError / RuntimeError,
+those exceptions are converted to a Response by Starlette's
+ExceptionMiddleware BEFORE they ever reach this middleware's dispatch().
+So `engage_auto_kill()` below is called DIRECTLY from those handlers in
+main.py, not from this middleware's except block. The except block here
+is kept only as a fallback for the rare case something slips through.
+
 Redis keys:
     kill_switch:auto_kill_until  →  Unix timestamp (float), TTL = recovery_seconds
 """
@@ -31,8 +39,37 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from App.core.settings import settings
 from App.core.LoggingInit import get_core_logger
 from App.core.RedisConnector import redis_client
+from App.core.exceptions import InfrastructureError
 
 logger = get_core_logger(__name__)
+
+_INFRA_EXCEPTIONS = (SQLAlchemyError, RedisError, InfrastructureError)
+
+AUTO_KILL_KEY = "kill_switch:auto_kill_until"
+
+
+# ============================================================================
+# Module-level function — importable from main.py's exception handlers.
+# This is the ONLY place that actually sets the Redis key in practice.
+# ============================================================================
+async def engage_auto_kill(recovery_seconds: int = 60) -> None:
+    """
+    Set the auto-kill flag in Redis. Uses SET NX so the first caller
+    to trip the switch owns the window; a second failure does not extend it.
+
+    Call this from main.py's exception handlers for genuine infra failures
+    (OperationalError, SQLAlchemyError, RedisError, InfrastructureError).
+    """
+    try:
+        until = time.time() + recovery_seconds
+        c = await redis_client.ensure_connected()
+        await c.set(AUTO_KILL_KEY, str(until), ex=recovery_seconds, nx=True)
+        logger.error(
+            f"Auto-kill engaged until {time.ctime(until)} "
+            f"({recovery_seconds}s cooldown)"
+        )
+    except Exception as redis_err:
+        logger.error(f"Failed to set auto-kill in Redis: {redis_err}")
 
 
 class KillSwitchMiddleware(BaseHTTPMiddleware):
@@ -47,11 +84,7 @@ class KillSwitchMiddleware(BaseHTTPMiddleware):
     TTL expires, traffic resumes automatically.
     """
 
-    # Paths that bypass both kill modes. Matched as exact paths or as
-    # path prefixes followed by "/".
     WHITELIST = ("/health", "/docs", "/redoc", "/openapi.json")
-
-    AUTO_KILL_KEY = "kill_switch:auto_kill_until"
 
     def __init__(self, app, recovery_seconds: int = 60):
         super().__init__(app)
@@ -63,72 +96,29 @@ class KillSwitchMiddleware(BaseHTTPMiddleware):
             f"whitelist={list(self.WHITELIST)}"
         )
 
-    # ------------------------------------------------------------------
-    # helpers
-    # ------------------------------------------------------------------
-
     def _is_whitelisted(self, path: str) -> bool:
-        """
-        Exact match, or prefix match with a slash boundary.
-
-        /health          → whitelisted
-        /health/live     → whitelisted
-        /healthsomething → NOT whitelisted
-        """
         return any(
             path == w or path.startswith(w + "/")
             for w in self.WHITELIST
         )
 
     async def _auto_kill_remaining(self) -> int:
-        """
-        Return remaining seconds of the auto-kill window, or 0 if inactive.
-        Never raises — Redis failures are treated as "no active kill".
-        """
         try:
             c = await redis_client.ensure_connected()
-            until_raw = await c.get(self.AUTO_KILL_KEY)
+            until_raw = await c.get(AUTO_KILL_KEY)
             if not until_raw:
                 return 0
             until = float(until_raw)
             remaining = int(until - time.time())
             return remaining if remaining > 0 else 0
         except Exception as e:
-            # Redis down → fail open. Do not block traffic on a broken limiter.
             logger.error(f"Auto-kill check failed (failing open): {e}")
             return 0
-
-    async def _engage_auto_kill(self) -> None:
-        """
-        Set the auto-kill flag in Redis. Uses SET NX so the first worker
-        to trip the switch owns the window; a second worker's failure
-        does not extend it.
-        """
-        try:
-            until = time.time() + self.recovery_seconds
-            c = await redis_client.ensure_connected()
-            await c.set(
-                self.AUTO_KILL_KEY,
-                str(until),
-                ex=self.recovery_seconds,
-                nx=True,
-            )
-            logger.error(
-                f"Auto-kill engaged until {time.ctime(until)} "
-                f"({self.recovery_seconds}s cooldown)"
-            )
-        except Exception as redis_err:
-            logger.error(f"Failed to set auto-kill in Redis: {redis_err}")
-
-    # ------------------------------------------------------------------
-    # main dispatch
-    # ------------------------------------------------------------------
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
 
         if not self._is_whitelisted(path):
-            # 1. Manual kill
             if settings.KILL_SWITCH_ENABLED:
                 logger.warning(f"Manual kill switch ON — blocking {path}")
                 return JSONResponse(
@@ -140,7 +130,6 @@ class KillSwitchMiddleware(BaseHTTPMiddleware):
                     },
                 )
 
-            # 2. Auto kill (Redis-backed, multi-worker safe)
             remaining = await self._auto_kill_remaining()
             if remaining > 0:
                 logger.warning(
@@ -157,26 +146,25 @@ class KillSwitchMiddleware(BaseHTTPMiddleware):
                     headers={"Retry-After": str(remaining)},
                 )
 
-        # 3. Pass through
         try:
             return await call_next(request)
 
         except HTTPException:
-            # Deliberate FastAPI response — never trip the kill switch.
             raise
 
         except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
-            # Client hung up. Not a server fault. Do not trip the kill switch.
             raise
 
         except _INFRA_EXCEPTIONS as e:
-            # Genuine infrastructure failure: DB, Redis, object storage.
+            # Fallback only — in the normal case main.py's handlers already
+            # caught this and called engage_auto_kill() themselves before
+            # this exception ever got here.
             req_id = getattr(request.state, "request_id", "-")
             logger.exception(
                 f"Infrastructure failure — entering safety mode for "
                 f"{self.recovery_seconds}s: {e}"
             )
-            await self._engage_auto_kill()
+            await engage_auto_kill(self.recovery_seconds)
             return JSONResponse(
                 status_code=503,
                 content={
@@ -186,8 +174,3 @@ class KillSwitchMiddleware(BaseHTTPMiddleware):
                 },
                 headers={"Retry-After": str(self.recovery_seconds)},
             )
-
-        # Everything else — application bugs, validation leaks, unexpected
-        # exceptions. Let them propagate to main.py's global handler so the
-        # caller gets a proper request-ID-tagged 500 and no other user is
-        # affected.

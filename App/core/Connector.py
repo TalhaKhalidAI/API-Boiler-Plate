@@ -1,4 +1,4 @@
-# App/core/Connector.py - PRODUCTION READY VERSION (error handling fixed)
+# App/core/Connector.py
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, AsyncEngine
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -10,13 +10,24 @@ from typing import AsyncGenerator, Optional, Dict, Any
 from contextlib import asynccontextmanager
 import logging
 from tenacity import retry, stop_after_attempt, wait_exponential
-from fastapi import HTTPException, status
 from App.core.settings import settings
+from App.core.exceptions import InfrastructureError
 
 logger = logging.getLogger(__name__)
 
 class Database:
-    """Professional PostgreSQL database connector - Production Ready"""
+    """Async PostgreSQL connector.
+
+    Exception policy:
+        - Connection failures raise `InfrastructureError` (a subclass of
+          `DomainError`). main.py maps it to a 503 with a consistent shape.
+        - Session-level failures (OperationalError, SQLAlchemyError) are
+          rolled back and re-raised untouched. main.py's SQLAlchemy
+          handlers translate them.
+        - Business exceptions (HTTPException, DomainError, ...) roll back
+          the transaction but pass through unchanged.
+    """
+
     def __init__(self, db_url: Optional[str] = None):
         self.db_url = db_url or settings.database_url
         self._engine: Optional[AsyncEngine] = None
@@ -26,30 +37,25 @@ class Database:
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10)
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=True,
     )
     async def connect(self) -> None:
-        """Connect to database with retry logic"""
+        """Connect to the database with retry/backoff."""
         if self._is_connected:
             return
         try:
             safe_url = self.db_url
-            if '@' in safe_url:
-                parts = safe_url.split('@')
-                if ':' in parts[0]:
-                    user_pass = parts[0].split(':')
+            if "@" in safe_url:
+                parts = safe_url.split("@")
+                if ":" in parts[0]:
+                    user_pass = parts[0].split(":")
                     if len(user_pass) > 1:
                         safe_url = f"{user_pass[0]}:****@{parts[1]}"
             logger.info(f"Connecting to database: {safe_url}")
-            pool_params = {
-                "pool_size": 10,
-                "max_overflow": 20,
-                "pool_recycle": 1800,
-                "pool_timeout": 30
-            }
             self._engine = create_async_engine(
                 self.db_url,
-                echo=settings.DATABASE_ECHO if hasattr(settings, 'DATABASE_ECHO') else False,
+                echo=getattr(settings, "DATABASE_ECHO", False),
                 poolclass=AsyncAdaptedQueuePool,
                 pool_size=settings.DATABASE_POOL_SIZE,
                 max_overflow=settings.DATABASE_MAX_OVERFLOW,
@@ -58,16 +64,14 @@ class Database:
                 pool_pre_ping=True,
                 connect_args={
                     "server_settings": {
-                        "search_path": settings.DATABASE_SCHEMA if hasattr(settings, 'DATABASE_SCHEMA') else "public",
-                        "application_name": settings.DATABASE_NAME if hasattr(settings, 'DATABASE_NAME') else "fastapi_app",
-                        "timezone": "UTC"
+                        "search_path": getattr(settings, "DATABASE_SCHEMA", "public"),
+                        "application_name": getattr(settings, "DATABASE_NAME", "fastapi_app"),
+                        "timezone": "UTC",
                     },
-                    "command_timeout": settings.DATABASE_CONNECT_TIMEOUT if hasattr(settings, 'DATABASE_CONNECT_TIMEOUT') else 30,
+                    "command_timeout": getattr(settings, "DATABASE_CONNECT_TIMEOUT", 30),
                 },
                 future=True,
-                execution_options={
-                    "isolation_level": "READ COMMITTED"
-                }
+                execution_options={"isolation_level": "READ COMMITTED"},
             )
             async with self._engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
@@ -76,7 +80,6 @@ class Database:
                 bind=self._engine,
                 class_=AsyncSession,
                 expire_on_commit=False,
-                autocommit=False,
                 autoflush=False,
             )
             self._is_connected = True
@@ -92,10 +95,10 @@ class Database:
             self._is_connected = False
             self._connection_error = str(e)
             logger.error(f"Database error: {e}")
-            raise RuntimeError(f"Database connection failed: {e}")
+            raise InfrastructureError(f"Database connection failed: {e}") from e
 
     async def disconnect(self) -> None:
-        """Disconnect from database"""
+        """Dispose the engine and reset state."""
         if self._engine:
             await self._engine.dispose()
             self._engine = None
@@ -104,19 +107,22 @@ class Database:
             self._connection_error = None
             logger.info("Database disconnected")
 
+    # ------------------------------------------------------------------
+    # Health / introspection
+    # ------------------------------------------------------------------
     async def health_check(self) -> Dict[str, Any]:
-        """Check database health with detailed status"""
+        """Return a status dict for the DB."""
         if not self._is_connected:
             return {
                 "status": "disconnected",
                 "connected": False,
-                "error": self._connection_error or "Not connected"
+                "error": self._connection_error or "Not connected",
             }
 
         try:
             async with self._engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
-                return {"status": "healthy", "connected": True, "error": None}
+            return {"status": "healthy", "connected": True, "error": None}
         except Exception as e:
             self._is_connected = False
             self._connection_error = str(e)
@@ -134,55 +140,57 @@ class Database:
     @property
     def engine(self) -> AsyncEngine:
         if not self._engine or not self._is_connected:
-            raise RuntimeError("Database not connected. Call connect() first.")
+            raise InfrastructureError("Database not connected")
         return self._engine
 
     @property
     def session_factory(self) -> async_sessionmaker:
         if not self._session_factory or not self._is_connected:
-            raise RuntimeError("Database not connected. Call connect() first.")
+            raise InfrastructureError("Database not connected")
         return self._session_factory
 
+    # ------------------------------------------------------------------
+    # Session context managers
+    # ------------------------------------------------------------------
     @asynccontextmanager
     async def session(self) -> AsyncGenerator[AsyncSession, None]:
         """
-        Context manager for database sessions.
-        Always rolls back on any exception, but only treats genuine
-        SQLAlchemy/connection errors as "database errors" for logging
-        and re-raising purposes. Business-logic exceptions raised by
-        routes or repositories (HTTPException, ValueError, etc.) are
-        rolled back silently and propagated unchanged — they must not
-        be mislabeled as database problems.
+        Yield a session inside a transaction.
+
+        Commits on success. Rolls back on any exception. Only genuine
+        SQLAlchemy failures are logged as DB errors — business exceptions
+        (HTTPException, DomainError, ValueError, ...) roll back silently
+        and propagate unchanged.
         """
         if not self._is_connected:
             logger.warning("Database not connected, attempting to reconnect...")
             try:
                 await self.connect()
+            except InfrastructureError:
+                raise
             except Exception as e:
                 logger.error(f"Failed to reconnect: {e}")
-                raise RuntimeError(f"Database connection failed: {e}")
+                raise InfrastructureError("Database unavailable") from e
 
         async with self.session_factory() as session:
             try:
                 yield session
                 await session.commit()
             except OperationalError as e:
-                # Genuine connection-level failure
+                # Genuine connection-level failure.
                 await session.rollback()
                 self._is_connected = False
                 self._connection_error = str(e)
                 logger.error(f"Database operational error: {e}")
                 raise
             except SQLAlchemyError as e:
-                # Genuine SQL-level failure (constraint violation, bad query, etc.)
+                # Genuine SQL-level failure (constraint violation, bad query, ...).
                 await session.rollback()
                 logger.error(f"Database SQL error: {e}")
                 raise
             except Exception:
-                # Anything else — HTTPException, ValueError, business logic
-                # errors raised by routes/repositories. Roll back so the
-                # transaction doesn't half-commit, but do NOT log this as
-                # a database error and do NOT change what's raised.
+                # Business exceptions and anything else. Roll back so we
+                # don't half-commit, but do NOT relabel the exception.
                 await session.rollback()
                 raise
             finally:
@@ -190,7 +198,7 @@ class Database:
 
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[AsyncSession, None]:
-        """Context manager for transactions"""
+        """Session wrapped in an explicit transaction block."""
         async with self.session() as session:
             async with session.begin():
                 yield session
@@ -199,87 +207,39 @@ class Database:
 # SQLAlchemy Base for models
 Base = declarative_base()
 
-# Database instance (singleton for the application)
+# Application-wide singleton
 database = Database()
 
 
-# ========== get_db() ==========
-
+# =====================================================================
+# FastAPI dependency
+# =====================================================================
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
-    FastAPI dependency injection for database sessions.
-    Auto-connects if not connected.
+    FastAPI dependency that yields a database session.
 
-    Only genuine database failures (OperationalError, SQLAlchemyError) are
-    converted into 503/500 responses here. HTTPExceptions raised deliberately
-    by routes pass through untouched. Anything else unexpected (e.g. a
-    repository ValueError that a route forgot to translate) is surfaced as
-    a real 500 so it's visible and fixable — but is logged as what it is,
-    not mislabeled as a database problem.
+    Infrastructure failures propagate to main.py's exception handlers,
+    which return a consistent 503 shape (with request_id and Retry-After)
+    on every endpoint. Route-level HTTPExceptions pass through untouched.
+
+    No local try/except — catching here would convert the exception
+    class before the global handlers could match on it.
     """
     if not database.is_connected:
-        logger.warning("Database not connected, attempting to connect on-demand...")
-        try:
-            await database.connect()
-            logger.info("Database connected successfully on-demand!")
-        except Exception as e:
-            logger.error(f"On-demand connection failed: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "error": "database_unavailable",
-                    "message": "Database service is temporarily unavailable. Please try again later.",
-                    "status": "disconnected"
-                }
-            )
+        await database.connect()   # raises InfrastructureError on failure
 
-    try:
-        async with database.session() as session:
-            yield session
-
-    except OperationalError as e:
-        logger.error(f"Database operational error: {e}")
-        database._is_connected = False
-        database._connection_error = str(e)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "error": "database_connection_lost",
-                "message": "Database connection was lost. Please try again.",
-                "status": "error"
-            }
-        )
-
-    except SQLAlchemyError as e:
-        logger.error(f"Database SQL error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error": "database_error",
-                "message": "A database error occurred. Please try again.",
-                "status": "error"
-            }
-        )
-
-    except HTTPException:
-        # Deliberate business-logic response (400/403/404/...) — pass through untouched.
-        raise
-
-    # Deliberately no bare `except Exception` here. Anything that isn't an
-    # HTTPException, OperationalError, or SQLAlchemyError (e.g. a ValueError
-    # a route forgot to catch) is a real application bug, not a database
-    # problem — let it propagate to main.py's global exception handler,
-    # which logs it correctly and returns a proper request-ID-tagged 500,
-    # instead of being silently relabeled as "database error" here.
+    async with database.session() as session:
+        yield session
 
 
-# Repository base class
+# =====================================================================
+# Repository base
+# =====================================================================
 class BaseRepository:
-    """Base repository for database operations"""
+    """Base for repositories — provides session and raw query helper."""
 
     def __init__(self, session: AsyncSession):
         self.session = session
 
     async def execute_raw(self, query: str, params: dict = None):
-        """Execute raw SQL query"""
         return await self.session.execute(text(query), params or {})
