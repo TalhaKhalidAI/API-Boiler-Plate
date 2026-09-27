@@ -34,7 +34,7 @@ class AuthService:
                 identifier=username,
                 ip=ip,
                 max_attempts=settings.MAX_LOGIN_ATTEMPTS or 4,
-                window=300,
+                window=settings.REFRESH_TOKEN_TTL_SECONDS or 300,
             )
         except (RedisError, RuntimeError) as exc:
             raise InfrastructureError("Redis unavailable during login") from exc

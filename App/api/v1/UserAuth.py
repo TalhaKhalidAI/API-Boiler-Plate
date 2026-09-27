@@ -3,9 +3,9 @@
 Authentication endpoints.
 
 Routes:
-    POST /basic_auth/login    — authenticate, issue access + refresh tokens
-    POST /basic_auth/signup   — register a new user
-    POST /basic_auth/logout   — revoke refresh token, clear cookies
+    POST /basic_auth/login    -- authenticate, issue access + refresh tokens
+    POST /basic_auth/signup   -- register a new user
+    POST /basic_auth/logout   -- revoke refresh token, clear cookies
 """
 
 from datetime import datetime, timezone
@@ -119,7 +119,7 @@ async def login(
 
     except HTTPException:
         raise
-    except RateLimitError as e:                              # ← NEW — insert here
+    except RateLimitError as e:                              # NEW -- insert here
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=str(e),
@@ -197,7 +197,7 @@ async def signup(
 # ============================================================================
 # POST /basic_auth/logout
 # ============================================================================
- 
+
 
 @router.post(
     "/logout",
@@ -215,10 +215,10 @@ async def logout(
 ):
     req_id = getattr(request.state, "request_id", "-")
 
-    # -------- 1. Pick the refresh token from body → cookie --------
+    # -------- 1. Pick the refresh token from body -> cookie --------
     refresh_value = refresh_token_body or refresh_auth
 
-    # -------- 2. Pick the access token from header → cookie --------
+    # -------- 2. Pick the access token from header -> cookie --------
     access_value = bearer.credentials if bearer else cookie_auth
 
     revoked_any = False
@@ -226,9 +226,13 @@ async def logout(
     # -------- 3. Revoke refresh (kills rotation family too) --------
     if refresh_value:
         try:
-            if await AuthService(db=None).revoke_all_sessions_for_user(user_id):
-                revoked_any = True
-                logger.info(f"[{req_id}] Revoked refresh token during logout")
+            # FIX: extract user_id from the refresh token before revoking
+            payload = decode_jwt_ignore_expiry(refresh_value)
+            user_id = payload.get("user_id") if payload else None
+            if user_id:
+                if await AuthService(db=None).revoke_all_sessions_for_user(user_id):
+                    revoked_any = True
+                    logger.info(f"[{req_id}] Revoked refresh token during logout")
         except Exception:
             logger.exception(f"[{req_id}] Logout refresh revocation failed")
             raise HTTPException(
@@ -236,7 +240,7 @@ async def logout(
                 detail="Logout unavailable, please retry",
             )
     elif access_value:
-        # Bearer client sent only the access token — no refresh token in
+        # Bearer client sent only the access token -- no refresh token in
         # body or cookie. We still need to make sure their stored refresh
         # token can't mint new sessions. Log out everywhere for this user.
         payload = decode_jwt_ignore_expiry(access_value)
@@ -248,7 +252,7 @@ async def logout(
                     revoked_any = True
                 logger.info(
                     f"[{req_id}] Logout-everywhere for user {user_id} "
-                    f"— revoked {n} refresh families"
+                    f"-- revoked {n} refresh families"
                 )
             except Exception:
                 logger.exception(f"[{req_id}] Logout-everywhere failed")

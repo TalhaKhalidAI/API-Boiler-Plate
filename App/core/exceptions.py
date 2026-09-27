@@ -2,7 +2,7 @@
 Domain exceptions for the repository layer.
 
 These are raised by repositories and translated to HTTP responses
-by the route layer. They are deliberately NOT HTTPException subclasses —
+by the route layer. They are deliberately NOT HTTPException subclasses --
 the repository should not know about HTTP.
 """
 
@@ -148,6 +148,7 @@ class DuplicateVideoGrantError(DomainError):
 
 class CommentLikeNotFoundError(DomainError):
     default_message = "Comment like not found"
+
 class PermissionDeniedError(DomainError):
     """Raised when an authenticated user lacks the required permission."""
     default_message = "You don't have permission to perform this action"
@@ -156,4 +157,4 @@ class ValidationError(DomainError):
     default_message = "Invalid input"
 
 class IntegrityError(DomainError):
-    default_message = "Integraty error"
+    default_message = "Integrity error"

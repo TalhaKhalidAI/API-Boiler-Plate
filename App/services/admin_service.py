@@ -1,3 +1,4 @@
+# App/services/admin_service.py
 import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -119,7 +120,7 @@ class AdminService:
         has_restore_permission = current_user_perms.get("admin.users.restore", False)
         has_self_disable = current_user_perms.get("user.disable.self", False)
 
-        # ← FIX 1: Admins must NEVER disable themselves.
+        # <- FIX 1: Admins must NEVER disable themselves.
         # A disabled user cannot authenticate (get_current_user rejects them at the
         # gate), so the only way back in is an SLT issued by *another* admin. If
         # the self-disabling admin is the last admin, the system is bricked until
@@ -131,7 +132,7 @@ class AdminService:
 
         can_disable_any = is_admin or has_promote_permission or has_restore_permission
 
-        # ── Path 1: disable someone else ────────────────────────────────────────
+        # -- Path 1: disable someone else --------------------------------------------------------
         if not is_self:
             if not can_disable_any:
                 raise PermissionDeniedError(
@@ -145,8 +146,8 @@ class AdminService:
                 "disabled_by": "admin_or_permission",
             }
 
-        # ── Path 2: disable self (non-admin only, admin case already rejected) ──
-        # ← FIX 2: reachable only when is_self AND NOT is_admin.
+        # -- Path 2: disable self (non-admin only, admin case already rejected) --
+        # <- FIX 2: reachable only when is_self AND NOT is_admin.
         # Requires the user.disable.self permission AND password confirmation.
         if not has_self_disable:
             raise PermissionDeniedError(
@@ -197,10 +198,10 @@ class AdminService:
                     f"SLT token can only enable user {cur_id}, not {user_id}"
                 )
         elif can_enable_any:
-            # Admin or delegated user — can enable anyone.
+            # Admin or delegated user -- can enable anyone.
             pass
         elif has_self_enable and is_self:
-            # Self-enable — only if the caller is targeting themselves.
+            # Self-enable -- only if the caller is targeting themselves.
             pass
         else:
             raise PermissionDeniedError("You don't have permission to enable this account")
@@ -241,7 +242,7 @@ class AdminService:
                 "enabled_by": enabled_by,
             }
 
-        # Self-enable (has_self_enable and is_self) — password required.
+        # Self-enable (has_self_enable and is_self) -- password required.
         if is_self and has_self_enable:
             if not password:
                 raise PasswordRequiredError("Password required for self-enable")
@@ -258,7 +259,7 @@ class AdminService:
                 "enabled_by": "Self",
             }
 
-        # Shouldn't reach here — the authz block above already rejected the
+        # Shouldn't reach here -- the authz block above already rejected the
         # cases that could.
         raise PermissionDeniedError("You don't have permission to enable this account")
 
@@ -318,6 +319,15 @@ class AdminService:
         has_permission = perms.get("admin.system.kill_switch", False)
         if not (is_admin or has_permission):
             raise PermissionDeniedError("Only administrators can reset the safety mode")
+
+        # FIX: actually delete the Redis key so auto-kill disengages
+        try:
+            c = await redis_client.ensure_connected()
+            await c.delete("kill_switch:auto_kill_until")
+            logger.info(f"Auto-kill reset by {current_user.get('email')}")
+            return {"status": "success", "message": "Safety mode reset"}
+        except Exception as exc:
+            raise InfrastructureError("Redis unavailable during auto-kill reset") from exc
 
     async def delete_account(self, user_id: int, password: Optional[str], current_user: Dict[str, Any]):
         repo = UserRepository(self.db)
@@ -506,169 +516,4 @@ class AdminService:
                 "updated_by": "Self",
             }
 
-        raise PermissionDeniedError("You don't have permission to update this user's password")
-
-    async def get_all_permissions(self):
-        return [{"name": p.name, "value": p.value} for p in Permission]
-
-    async def set_permissions(self, pm, current_user: Dict[str, Any]):
-        repo = UserRepository(self.db)
-        uid = current_user.get("id")
-
-        if uid == pm.user_id:
-            raise PermissionDeniedError("You cannot update your own permissions")
-
-        target = await repo.get_by_id(pm.user_id)
-        if not target:
-            raise UserNotFoundError(f"User {pm.user_id} not found")
-
-        updated = await repo.set_permissions(user_id=pm.user_id, permissions=pm.permissions)
-        return {
-            "status": "success",
-            "message": f"Permissions updated for user {pm.user_id}",
-            "user_id": pm.user_id,
-            "permissions": updated.permissions,
-        }
-
-    async def set_permissions_bulk(self, bulk_pm, current_user: Dict[str, Any], replace_all: bool = False):
-        repo = UserRepository(self.db)
-
-        has_promote = (current_user.get("permissions") or {}).get("admin.users.promote", False)
-        if not has_promote:
-            raise PermissionDeniedError("You don't have permission to set permissions. Need admin.users.promote.")
-
-        user_ids = [p.user_id for p in bulk_pm.all_user_permissions]
-        existing_users = await repo.get_by_ids(user_ids)
-        existing_user_ids = {user.id for user in existing_users}
-        missing_users = [uid for uid in user_ids if uid not in existing_user_ids]
-        if missing_users:
-            raise UserNotFoundError(f"Users not found with IDs: {missing_users}")
-
-        current_user_id = current_user.get("id")
-        if current_user_id in user_ids:
-            raise PermissionDeniedError("You cannot update your own permissions")
-
-        updated_users = []
-        for perm_update in bulk_pm.all_user_permissions:
-            if replace_all:
-                updated = await repo.replace_all_permissions(perm_update.user_id, perm_update.permissions)
-                operation = "replaced"
-            else:
-                updated = await repo.set_permissions(perm_update.user_id, perm_update.permissions)
-                operation = "merged"
-            updated_users.append(
-                {
-                    "user_id": perm_update.user_id,
-                    "permissions": updated.permissions,
-                    "status": "success",
-                    "operation": operation,
-                }
-            )
-
-        # await self.db.commit()
-
-        return {
-            "status": "success",
-            "message": (
-                f"Permissions {('replaced' if replace_all else 'merged')} for {len(updated_users)} users"
-            ),
-            "mode": "replace_all" if replace_all else "merge",
-            "updated_users": updated_users,
-            "total_processed": len(bulk_pm.all_user_permissions),
-            "total_success": len(updated_users),
-            "total_failed": 0,
-        }
-
-    async def get_users_permissions(self, user_id: Optional[int], skip: int, limit: int, include_user_info: bool, current_user: Dict[str, Any]):
-        repo = UserRepository(self.db)
-
-        current_user_id = current_user.get("id")
-        current_user_perms = self._normalize_permissions(current_user.get("permissions"))
-
-        has_promote = current_user_perms.get("admin.users.promote", False)
-        has_settings_view = current_user_perms.get("admin.settings.view", False)
-        is_admin = current_user.get("role") == "admin"
-        can_view_any = is_admin or has_promote or has_settings_view
-
-        if user_id is None:
-            target_user_id = current_user_id
-        else:
-            is_viewing_self = user_id == current_user_id
-            if not is_viewing_self and not can_view_any:
-                raise PermissionDeniedError(
-                    "You don't have permission to view other users' permissions. Need admin.users.promote or admin.settings.view."
-                )
-            target_user_id = user_id
-
-        result = await repo.get_user_permission_db(
-            user_id=target_user_id,
-            skip=skip,
-            limit=limit,
-            include_user_info=include_user_info,
-        )
-        return {"status": "success", "data": result}
-
-    async def remove_permissions(self, data, current_user: Dict[str, Any]):
-        repo = UserRepository(self.db)
-
-        current_user_id = current_user.get("id")
-        current_user_role = current_user.get("role")
-        current_user_perms = self._normalize_permissions(current_user.get("permissions"))
-
-        target = await repo.get_by_id(data.user_id)
-        if not target:
-            raise UserNotFoundError(f"User {data.user_id} not found")
-
-        is_self = current_user_id == data.user_id
-        is_admin = current_user_role == "admin"
-        has_promote = current_user_perms.get("admin.users.promote", False)
-
-        if is_admin:
-            pass
-        elif is_self and has_promote:
-            pass
-        else:
-            raise PermissionDeniedError("You don't have permission to delete permissions")
-
-        if is_admin and is_self:
-            raise PermissionDeniedError("Admin cannot delete their own permissions")
-        if is_self and not is_admin:
-            if data.permission_keys and "admin.users.promote" in data.permission_keys:
-                raise PermissionDeniedError("You cannot remove your own admin.users.promote permission")
-
-        target_perms = target.permissions or {}
-        if isinstance(target_perms, str):
-            try:
-                target_perms = json.loads(target_perms)
-            except (TypeError, ValueError):
-                target_perms = {}
-
-        removed_count: Any = 0
-        if data.remove_all:
-            if not target_perms:
-                raise ValidationError("User has no permissions to delete")
-            updated = await repo.remove_all_permissions(data.user_id)
-            message = f"All permissions removed for user {target.email}"
-            removed_count = "all"
-
-        elif data.permission_keys:
-            existing_keys = [k for k in data.permission_keys if k in target_perms]
-            missing_keys = [k for k in data.permission_keys if k not in target_perms]
-            if not existing_keys:
-                raise ValidationError(f"Permissions not found: {', '.join(missing_keys)}")
-            updated = await repo.remove_permissions(data.user_id, existing_keys)
-            message = f"Permissions removed for user {target.email}: {existing_keys}"
-            if missing_keys:
-                message += f" (Warning: {', '.join(missing_keys)} not found)"
-            removed_count = len(existing_keys)
-
-        else:
-            raise ValidationError("Either permission_keys or remove_all must be provided")
-
-        return {
-            "status": "success",
-            "message": message,
-            "user_id": data.user_id,
-            "permissions": updated.permissions,
-            "removed_count": removed_count,
-        }
+        raise PermissionDeniedError("You don't have permission to update this password")

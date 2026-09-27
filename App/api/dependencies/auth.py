@@ -1,4 +1,3 @@
-
 # App/api/dependencies/auth.py
 """
 Authentication and authorization dependencies.
@@ -6,7 +5,7 @@ Authentication and authorization dependencies.
 Exception policy (applies to every function in this file):
     - Raise HTTPException only for HTTP-level DECISIONS (401/403/404).
       These are deliberate responses to a known condition, not caught
-      exceptions. Example: "no token supplied" → 401.
+      exceptions. Example: "no token supplied" -> 401.
     - Let infrastructure errors (SQLAlchemyError, RedisError, library
       bugs, missing config) propagate to main.py's global handlers.
       Those handlers return a consistent 503 for DB/Redis downtime and
@@ -118,8 +117,8 @@ def decode_jwt(token: str) -> Optional[Dict[str, Any]]:
     """
     Decode and validate a JWT.
 
-    - Expired signature  → 401 "Token has expired"
-    - Any other JWT issue → 401 "Invalid token"
+    - Expired signature  -> 401 "Token has expired"
+    - Any other JWT issue -> 401 "Invalid token"
 
     Any non-JWT failure (missing SECRET_KEY, library bug) propagates.
     """
@@ -148,7 +147,7 @@ def decode_jwt(token: str) -> Optional[Dict[str, Any]]:
 
 def decode_jwt_ignore_expiry(token: str) -> Optional[Dict[str, Any]]:
     """
-    Decode a JWT verifying the signature only — used when we need to
+    Decode a JWT verifying the signature only -- used when we need to
     inspect claims (e.g. user_id) from an expired token.
 
     Returns None if the token is malformed. Any other failure propagates.
@@ -201,7 +200,7 @@ async def _validate_token_payload(payload: Dict[str, Any]) -> None:
     - Rejects tokens missing `user_id`.
 
     Raises HTTPException(401) on any failure.
-    NOTE: Redis errors propagate — main.py returns 503 for those.
+    NOTE: Redis errors propagate -- main.py returns 503 for those.
     """
     jti = payload.get("jti")
     if jti and await token_store.is_access_blocked(jti):
@@ -245,6 +244,7 @@ async def _validate_token_payload(payload: Dict[str, Any]) -> None:
             detail="Invalid token payload",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
 def _user_dict(user, payload: Dict[str, Any]) -> Dict[str, Any]:
     """Build the auth context dictionary returned to route handlers."""
     return {
@@ -263,7 +263,7 @@ def _user_dict(user, payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ============================================================================
-# Dependencies — SLT-aware (bypasses account-status checks)
+# Dependencies -- SLT-aware (bypasses account-status checks)
 # ============================================================================
 async def get_current_user_slt(
     cookie_auth: Optional[str] = Depends(cookie_scheme),
@@ -273,11 +273,11 @@ async def get_current_user_slt(
     """
     Auth dependency that ACCEPTS short-lived tokens (SLT).
 
-    ⚠️  SLT tokens bypass all account-status checks (disabled / deleted).
-        Their purpose is account recovery and password reset.
-        They expire in 2 minutes and are meant to be single-use.
+    SLT tokens bypass all account-status checks (disabled / deleted).
+    Their purpose is account recovery and password reset.
+    They expire in 2 minutes and are meant to be single-use.
 
-    DB errors (OperationalError, SQLAlchemyError) are NOT caught here —
+    DB errors (OperationalError, SQLAlchemyError) are NOT caught here --
     they propagate to main.py's handlers, which return a consistent 503
     for every endpoint that depends on this function.
     """
@@ -316,7 +316,7 @@ async def get_current_user_slt(
 
 
 # ============================================================================
-# Dependencies — standard access token only (SLT rejected)
+# Dependencies -- standard access token only (SLT rejected)
 # ============================================================================
 async def get_current_user(
     cookie_auth: Optional[str] = Depends(cookie_scheme),
@@ -403,7 +403,7 @@ async def get_current_user_optional(
 
     Only 401/403/404 from get_current_user are absorbed into None
     (that's the point of "optional"). Infrastructure errors still
-    propagate — a DB outage should not silently look like "anonymous".
+    propagate -- a DB outage should not silently look like "anonymous".
     """
     if not token:
         return None
@@ -435,7 +435,7 @@ async def authenticate_user(
     """
     repo = UserRepository(db)
 
-    # Lookup. DB errors propagate — do not catch.
+    # Lookup. DB errors propagate -- do not catch.
     if "@" in uname:
         user = await repo.get_by_email(uname)
     else:
@@ -500,169 +500,124 @@ def create_refresh_token(data: Dict[str, Any], family_id: str) -> str:
         "family": family_id,
     })
 
-    return jwt.encode(
+    encoded_jwt = jwt.encode(
         to_encode,
         settings.secret_key_str,
         algorithm=settings.ALGORITHM,
     )
+    logger.debug(f"Created refresh token for user: {data.get('sub', 'unknown')}")
+    return encoded_jwt
 
 
-async def issue_refresh_token(
-    user_id: int,
-    email: str,
-    family_id: str,
-) -> str:
+async def refresh_access_token(refresh_token_value: str, db: AsyncSession) -> Optional[Dict[str, Any]]:
     """
-    Mint a refresh token and record it in the token store.
+    Rotate a refresh token and issue new access + refresh tokens.
 
-    Any Redis error (store_refresh, track_family_for_user) propagates
-    to main.py's handlers.
+    Returns None if the token is revoked, expired, or user not found.
+    Raises HTTPException for invalid token structure.
     """
-    refresh_token = create_refresh_token(
-        data={"sub": email, "user_id": user_id},
-        family_id=family_id,
-    )
-
-    payload = jwt.decode(
-        refresh_token,
-        settings.secret_key_str,
-        algorithms=[settings.ALGORITHM],
-    )
-    jti = payload["jti"]
-
-    await token_store.store_refresh(
-        jti=jti,
-        user_id=user_id,
-        family_id=family_id,
-        ttl=7 * 24 * 3600,
-    )
-    await token_store.track_family_for_user(
-        user_id=user_id,
-        family_id=family_id,
-        ttl=7 * 24 * 3600,
-    )
-
-    return refresh_token
-
-
-async def refresh_access_token(
-    refresh_token: str,
-    db: AsyncSession,
-) -> Optional[Dict[str, str]]:
-    """
-    Validate and rotate a refresh token.
-
-    Returns {access_token, refresh_token} on success.
-    Returns None for any of the following expected outcomes:
-      - token is not a valid JWT
-      - token is not of type "refresh"
-      - reuse detected (whole family revoked as a side effect)
-      - token missing from the store (already consumed)
-      - user is missing / disabled / inactive / deleted
-
-    Infrastructure errors (RedisError, SQLAlchemyError) propagate —
-    a Redis or DB outage must not be silently reported as "logged out".
-    """
-    try:
-        payload = decode_jwt(refresh_token)
-    except HTTPException:
-        # decode_jwt raises 401 on expired/invalid — treat both as "no session".
-        logger.debug("Refresh token invalid or expired")
-        return None
-
-    if payload.get("type") != "refresh":
+    payload = decode_jwt(refresh_token_value)
+    if not payload:
         return None
 
     jti = payload.get("jti")
-    family_id = payload.get("family")
     if not jti:
         return None
 
-    # Reuse detection — if already revoked, kill the whole family.
     if await token_store.is_refresh_revoked(jti):
-        logger.warning(f"Refresh reuse detected: jti={jti} family={family_id}")
-        if family_id:
-            await token_store.revoke_family(family_id)
+        logger.warning(f"Refresh token reuse detected: jti={jti}")
         return None
 
-    # Atomic consume — only one caller wins.
-    meta = await token_store.consume_refresh(jti)
-    if not meta:
+    data = await token_store.consume_refresh(jti)
+    if not data:
         return None
 
-    user_id = meta.get("user_id")
+    user_id = data.get("user_id")
+    family_id = data.get("family_id")
     if not user_id:
         return None
 
     repo = UserRepository(db)
     user = await repo.get_by_id(user_id)
-    if not user or user.disabled or not user.is_active or user.is_deleted:
+    if not user:
         return None
 
-    family = family_id or meta.get("family_id") or str(uuid.uuid4())
+    access_token = create_access_token(
+        data={
+            "type": "token",
+            "sub": user.email,
+            "user_id": user.id,
+            "name": user.name,
+            "role": user.user_role,
+        }
+    )
 
-    new_access = create_access_token({
-        "sub": user.email,
-        "user_id": user.id,
-        "name": user.name,
-        "role": user.user_role,
-    })
-
-    new_refresh = create_refresh_token(
-        data={"sub": user.email, "user_id": user.id},
-        family_id=family,
+    new_family_id = family_id or str(uuid.uuid4())
+    refresh_token = create_refresh_token(
+        data={
+            "type": "rf_token",
+            "sub": user.email,
+            "user_id": user.id,
+        },
+        family_id=new_family_id,
     )
 
     new_jti = jwt.decode(
-        new_refresh,
+        refresh_token,
         settings.secret_key_str,
         algorithms=[settings.ALGORITHM],
     )["jti"]
 
     await token_store.store_refresh(
         jti=new_jti,
-        user_id=user.id,
-        family_id=family,
-        ttl=7 * 24 * 3600,
+        user_id=user_id,
+        family_id=new_family_id,
+        ttl=settings.REFRESH_TOKEN_TTL_SECONDS,
+    )
+    await token_store.track_family_for_user(
+        user_id=user_id,
+        family_id=new_family_id,
+        ttl=settings.REFRESH_TOKEN_TTL_SECONDS,
     )
 
     return {
-        "access_token": new_access,
-        "refresh_token": new_refresh,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     }
-# ============================================================================
-# Short-lived token (SLT)
-# ============================================================================
-async def create_short_live_token(
-    user_id: int,
-    db: AsyncSession,
-    purpose: str = "restore_account",
-) -> Optional[str]:
+
+
+async def create_short_live_token(user_id: int, db: AsyncSession, purpose: str = "account_restoration") -> str:
     """
-    Create a short-lived (2 minute) token for a self-service action.
-
-    Returns:
-        str  — valid SLT
-        None — the user does not exist
-
-    Any other failure (DB down, missing SECRET_KEY, library error)
-    propagates to main.py's handlers so the caller sees a real 503/500.
+    Create a short-lived token (SLT) for account recovery or password reset.
+    Expires in 2 minutes.
     """
     repo = UserRepository(db)
     user = await repo.get_by_id(user_id)
-
     if not user:
-        return None
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
 
-    return create_access_token(
-        data={
-            "sub": user.email,
-            "user_id": user.id,
-            "name": user.name,
-            "role": user.user_role,
-            "types": "slts",
-            "purpose": purpose,
-            "jti": str(uuid.uuid4()),
-        },
-        expires_delta=timedelta(minutes=2),
+    expire = datetime.now(timezone.utc) + timedelta(minutes=2)
+    to_encode = {
+        "sub": user.email,
+        "user_id": user.id,
+        "name": user.name,
+        "role": user.user_role,
+        "type": "access",
+        "types": "slts",
+        "purpose": purpose,
+        "exp": expire,
+        "iat": datetime.now(timezone.utc),
+        "jti": str(uuid.uuid4()),
+    }
+
+    encoded_jwt = jwt.encode(
+        to_encode,
+        settings.secret_key_str,
+        algorithm=settings.ALGORITHM,
     )
+    logger.info(f"Created SLT for user {user_id}, purpose={purpose}")
+    return encoded_jwt

@@ -158,7 +158,7 @@ class Database:
         Yield a session inside a transaction.
 
         Commits on success. Rolls back on any exception. Only genuine
-        SQLAlchemy failures are logged as DB errors — business exceptions
+        SQLAlchemy failures are logged as DB errors -- business exceptions
         (HTTPException, DomainError, ValueError, ...) roll back silently
         and propagate unchanged.
         """
@@ -187,7 +187,7 @@ class Database:
                 raise
             except (ConnectionError, OSError, asyncio.TimeoutError) as e:
                 # Raw driver/network failure SQLAlchemy didn't wrap as
-                # OperationalError — classify it so main.py's handlers and
+                # OperationalError -- classify it so main.py's handlers and
                 # engage_auto_kill() actually fire, instead of falling through
                 # to the generic 500 catch-all.
                 await session.rollback()
@@ -203,9 +203,10 @@ class Database:
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[AsyncSession, None]:
         """Session wrapped in an explicit transaction block."""
+        # FIX: removed nested session.begin() to avoid double-commit.
+        # self.session() already handles commit/rollback.
         async with self.session() as session:
-            async with session.begin():
-                yield session
+            yield session
 
 
 # SQLAlchemy Base for models
@@ -232,7 +233,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 # Repository base
 # =====================================================================
 class BaseRepository:
-    """Base for repositories — provides session and raw query helper."""
+    """Base for repositories -- provides session and raw query helper."""
 
     def __init__(self, session: AsyncSession):
         self.session = session

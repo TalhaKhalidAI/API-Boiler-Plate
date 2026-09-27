@@ -3,19 +3,19 @@
 Admin endpoints: user account management, permissions, and safety-mode reset.
 
 Routes:
-    PUT    /account/{user_id}                   — update user account
-    POST   /account/disable/{user_id}           — disable user
-    POST   /account/enable/{user_id}            — enable user
-    POST   /account/temp_token/{user_id}        — issue short-lived token (SLT)
-    DELETE /account/{user_id}                   — soft-delete user
-    POST   /account/restore/{user_id}           — restore soft-deleted/disabled user
-    PUT    /account/password/{user_id}          — change password
-    POST   /reset-auto-kill                     — clear safety mode
-    GET    /get_all_permissions                 — list permission catalog
-    POST   /set_permissions                     — set single user's permissions
-    POST   /set_permissions_bulk                — set multiple users' permissions
-    GET    /users/permissions                   — read user permissions
-    DELETE /remove_permissions                  — remove permissions
+    PUT    /account/{user_id}                   -- update user account
+    POST   /account/disable/{user_id}           -- disable user
+    POST   /account/enable/{user_id}            -- enable user
+    POST   /account/temp_token/{user_id}        -- issue short-lived token (SLT)
+    DELETE /account/{user_id}                   -- soft-delete user
+    POST   /account/restore/{user_id}           -- restore soft-deleted/disabled user
+    PUT    /account/password/{user_id}          -- change password
+    POST   /reset-auto-kill                     -- clear safety mode
+    GET    /get_all_permissions                 -- list permission catalog
+    POST   /set_permissions                     -- set single user's permissions
+    POST   /set_permissions_bulk                -- set multiple users' permissions
+    GET    /users/permissions                   -- read user permissions
+    DELETE /remove_permissions                  -- remove permissions
 """
 
 from datetime import timedelta
@@ -46,6 +46,7 @@ from App.models.PermissionModel import (
     PermissionModel,
     BulkPermissionModel,
     RemovePermissionsModel,
+    UserPermissionsResponse,
 )
 from App.api.dependencies.auth import (
     verify_password,
@@ -143,7 +144,7 @@ async def update_account(
 async def disable_account(
     request: Request,
     user_id: int,
-    payload: PasswordConfirmRequest = None,
+    payload: Optional[PasswordConfirmRequest] = None,
     current_user: Dict[str, Any] = Depends(require_permission(required_permissions=[
                         Permission.ADMIN_USERS_DISABLE,
                 Permission.ADMIN_USERS_PROMOTE,
@@ -194,7 +195,7 @@ async def disable_account(
 async def enable_account(
     request: Request,
     user_id: int,
-    payload: PasswordConfirmRequest = None,
+    payload: Optional[PasswordConfirmRequest] = None,
     current_user: Dict[str, Any] = Depends(
         require_permission(
             required_permissions=[
@@ -211,7 +212,7 @@ async def enable_account(
 ):
     req_id = getattr(request.state, "request_id", "-")
     try:
-        pwd = payload.password if payload else None
+        pwd = payload.password.get_secret_value() if payload and payload.password else None
         service = AdminService(db)
         result = await service.enable_account(user_id, pwd, current_user)
         logger.info(f"[{req_id}] Enable action processed for user {user_id}")
@@ -333,7 +334,7 @@ async def reset_auto_kill(
         logger.exception(f"[{req_id}] Failed to clear auto-kill Redis key")
         raise HTTPException(
             status_code=503,
-            detail="Could not clear safety mode — Redis unavailable",
+            detail="Could not clear safety mode -- Redis unavailable",
         )
 
 
@@ -352,7 +353,7 @@ async def reset_auto_kill(
 async def delete_account(
     request: Request,
     user_id: int,
-    payload: PasswordConfirmRequest = None,
+    payload: Optional[PasswordConfirmRequest] = None,
     current_user: Dict[str, Any] = Depends(
         require_permission(
             required_permissions=[
@@ -368,7 +369,7 @@ async def delete_account(
 ):
     req_id = getattr(request.state, "request_id", "-")
     try:
-        pwd = payload.password if payload else None
+        pwd = payload.password.get_secret_value() if payload and payload.password else None
         service = AdminService(db)
         result = await service.delete_account(user_id, pwd, current_user)
         logger.info(f"[{req_id}] Delete action processed for user {user_id}")
@@ -468,7 +469,7 @@ async def update_password(
             additional_dependency=get_current_user_slt,
         )
     ),
-     
+
     db: AsyncSession = Depends(get_db),
 ):
     req_id = getattr(request.state, "request_id", "-")
@@ -504,10 +505,29 @@ async def update_password(
 # ============================================================================
 @admin_router.get(
     "/get_all_permissions",
-    summary="List all permissions in the catalog",
+    status_code=status.HTTP_200_OK,
+    summary="List all available permissions",
 )
 async def get_all_permissions(
     request: Request,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    return {
+        "permissions": [p.value for p in Permission],
+    }
+
+
+# ============================================================================
+# POST /set_permissions
+# ============================================================================
+@admin_router.post(
+    "/set_permissions",
+    status_code=status.HTTP_200_OK,
+    summary="Set permissions for a single user",
+)
+async def set_permissions(
+    request: Request,
+    model: PermissionModel,
     current_user: Dict[str, Any] = Depends(
         require_permission(
             required_permissions=[Permission.ADMIN_USERS_PROMOTE],
@@ -519,47 +539,17 @@ async def get_all_permissions(
 ):
     req_id = getattr(request.state, "request_id", "-")
     try:
-        service = AdminService(db)
-        return await service.get_all_permissions()
+        repo = UserRepository(db)
+        user = await repo.set_permissions(model.user_id, model.permissions)
+        logger.info(f"[{req_id}] Permissions updated for user {model.user_id}")
+        return UserPermissionsResponse(
+            user_id=user.id,
+            user_email=user.email,
+            user_name=user.name,
+            permissions=user.permissions or {},
+        )
     except HTTPException:
         raise
-    except Exception:
-        logger.exception(f"[{req_id}] Failed to list permissions")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error retrieving permissions",
-        )
-
-
-# ============================================================================
-# POST /set_permissions
-# ============================================================================
-@admin_router.post(
-    "/set_permissions",
-    summary="Set permissions for a single user",
-)
-async def set_permissions(
-    request: Request,
-    pm: PermissionModel,
-    current_user: Dict[str, Any] = Depends(
-        require_permission(
-            required_permissions=[Permission.ADMIN_USERS_PROMOTE],
-            bypass_admin=False,
-        )
-    ),
-    db: AsyncSession = Depends(get_db),
-):
-    req_id = getattr(request.state, "request_id", "-")
-    try:
-        service = AdminService(db)
-        result = await service.set_permissions(pm, current_user)
-        logger.info(f"[{req_id}] Single permission update processed for user {pm.user_id}")
-        return result
-
-    except HTTPException:
-        raise
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
     except DomainError as e:
@@ -577,104 +567,12 @@ async def set_permissions(
 # ============================================================================
 @admin_router.post(
     "/set_permissions_bulk",
-    summary="Set permissions for multiple users",
+    status_code=status.HTTP_200_OK,
+    summary="Bulk set permissions for multiple users",
 )
 async def set_permissions_bulk(
     request: Request,
-    bulk_pm: BulkPermissionModel,
-    current_user: Dict[str, Any] = Depends(
-        require_permission(
-            [Permission.ADMIN_USERS_PROMOTE], bypass_admin=False
-        )
-    ),
-    db: AsyncSession = Depends(get_db),
-    replace_all: bool = False,
-):
-    req_id = getattr(request.state, "request_id", "-")
-    try:
-        service = AdminService(db)
-        result = await service.set_permissions_bulk(bulk_pm, current_user, replace_all)
-        logger.info(f"[{req_id}] Bulk permission update completed: {result.get('mode')}")
-        return result
-
-    except HTTPException:
-        raise
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except UserNotFoundError:
-        raise HTTPException(status_code=404, detail="User not found")
-    except DomainError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except SQLAlchemyError:
-        logger.exception(f"[{req_id}] Bulk permissions DB error")
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-    except Exception:
-        logger.exception(f"[{req_id}] Bulk permissions unexpected error")
-        raise HTTPException(
-            status_code=500, detail="Error in bulk permission update"
-        )
-
-
-# ============================================================================
-# GET /users/permissions
-# ============================================================================
-@admin_router.get(
-    "/users/permissions",
-    summary="Get user permissions with pagination",
-)
-async def get_users_permissions(
-    request: Request,
-    user_id: Optional[int] = Query(None, description="Specific user ID to get permissions for"),
-    skip: int = Query(0, ge=0, description="Number of records to skip"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum records to return"),
-    include_user_info: bool = Query(False, description="Include user email and name"),
-    current_user: Dict[str, Any] = Depends(require_permission(required_permissions=[
-        Permission.ADMIN_USERS_VIEW,
-        Permission.ADMIN_USERS_PROMOTE,
-    ],mode='any',bypass_admin=False,additional_dependency=get_current_user)),
-    db: AsyncSession = Depends(get_db),
-):
-    req_id = getattr(request.state, "request_id", "-")
-    try:
-        service = AdminService(db)
-        result = await service.get_users_permissions(
-            user_id=user_id,
-            skip=skip,
-            limit=limit,
-            include_user_info=include_user_info,
-            current_user=current_user,
-        )
-        logger.info(f"[{req_id}] Permissions view requested for user {user_id}")
-        return result
-
-    except HTTPException:
-        raise
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except UserNotFoundError:
-        raise HTTPException(status_code=404, detail="User not found")
-    except DomainError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except SQLAlchemyError:
-        logger.exception(f"[{req_id}] Get user permissions DB error")
-        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
-    except Exception:
-        logger.exception(f"[{req_id}] Get user permissions unexpected error")
-        raise HTTPException(
-            status_code=500, detail="Error retrieving permissions"
-        )
-
-
-# ============================================================================
-# DELETE /remove_permissions
-# ============================================================================
-@admin_router.delete(
-    "/remove_permissions",
-    summary="Remove permissions from a user",
-)
-async def remove_permissions(
-    request: Request,
-    data: RemovePermissionsModel,
+    model: BulkPermissionModel,
     current_user: Dict[str, Any] = Depends(
         require_permission(
             required_permissions=[Permission.ADMIN_USERS_PROMOTE],
@@ -686,15 +584,113 @@ async def remove_permissions(
 ):
     req_id = getattr(request.state, "request_id", "-")
     try:
-        service = AdminService(db)
-        result = await service.remove_permissions(data, current_user)
-        logger.info(f"[{req_id}] Permission removal processed for user {data.user_id}")
-        return result
-
+        repo = UserRepository(db)
+        updated = []
+        for item in model.all_user_permissions:
+            user = await repo.replace_all_permissions(item.user_id, item.permissions)
+            updated.append({
+                "user_id": user.id,
+                "email": user.email,
+                "permissions": user.permissions or {},
+            })
+        logger.info(f"[{req_id}] Bulk permissions updated for {len(updated)} users")
+        return {"status": "success", "updated": updated}
     except HTTPException:
         raise
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+    except UserNotFoundError:
+        raise HTTPException(status_code=404, detail="User not found")
+    except DomainError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError:
+        logger.exception(f"[{req_id}] Bulk set permissions DB error")
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
+    except Exception:
+        logger.exception(f"[{req_id}] Bulk set permissions unexpected error")
+        raise HTTPException(status_code=500, detail="Failed to bulk set permissions")
+
+
+# ============================================================================
+# GET /users/permissions
+# ============================================================================
+@admin_router.get(
+    "/users/permissions",
+    status_code=status.HTTP_200_OK,
+    summary="Get user permissions",
+)
+async def get_users_permissions(
+    request: Request,
+    user_id: Optional[int] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    include_user_info: bool = Query(False),
+    current_user: Dict[str, Any] = Depends(
+        require_permission(
+            required_permissions=[Permission.ADMIN_USERS_PROMOTE, Permission.ADMIN_USERS_VIEW],
+            mode="any",
+            bypass_admin=False,
+        )
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    req_id = getattr(request.state, "request_id", "-")
+    try:
+        repo = UserRepository(db)
+        data = await repo.get_user_permission_db(
+            user_id=user_id,
+            skip=skip,
+            limit=limit,
+            include_user_info=include_user_info,
+        )
+        return data
+    except HTTPException:
+        raise
+    except UserNotFoundError:
+        raise HTTPException(status_code=404, detail="User not found")
+    except DomainError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError:
+        logger.exception(f"[{req_id}] Get permissions DB error")
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable")
+    except Exception:
+        logger.exception(f"[{req_id}] Get permissions unexpected error")
+        raise HTTPException(status_code=500, detail="Failed to get permissions")
+
+
+# ============================================================================
+# DELETE /remove_permissions
+# ============================================================================
+@admin_router.delete(
+    "/remove_permissions",
+    status_code=status.HTTP_200_OK,
+    summary="Remove permissions from a user",
+)
+async def remove_permissions(
+    request: Request,
+    model: RemovePermissionsModel,
+    current_user: Dict[str, Any] = Depends(
+        require_permission(
+            required_permissions=[Permission.ADMIN_USERS_PROMOTE],
+            mode="any",
+            bypass_admin=False,
+        )
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    req_id = getattr(request.state, "request_id", "-")
+    try:
+        repo = UserRepository(db)
+        if model.remove_all:
+            user = await repo.remove_all_permissions(model.user_id)
+        else:
+            user = await repo.remove_permissions(model.user_id, model.permission_keys or [])
+        logger.info(f"[{req_id}] Permissions removed for user {model.user_id}")
+        return {
+            "status": "success",
+            "user_id": user.id,
+            "permissions": user.permissions or {},
+        }
+    except HTTPException:
+        raise
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
     except DomainError as e:
@@ -704,4 +700,4 @@ async def remove_permissions(
         raise HTTPException(status_code=503, detail="Service temporarily unavailable")
     except Exception:
         logger.exception(f"[{req_id}] Remove permissions unexpected error")
-        raise HTTPException(status_code=500, detail="Error removing permissions")
+        raise HTTPException(status_code=500, detail="Failed to remove permissions")

@@ -3,11 +3,11 @@
 FastAPI application entrypoint.
 
 Middleware order (last added = outermost):
-    CORSMiddleware            ← runs first on request, last on response
+    CORSMiddleware            <- runs first on request, last on response
     KillSwitchMiddleware
     GlobalRateLimitMiddleware
     BodySizeLimitMiddleware
-    RequestIDMiddleware       ← runs first on response, last on request
+    RequestIDMiddleware       <- runs first on response, last on request
 """
 
 from contextlib import asynccontextmanager
@@ -47,41 +47,6 @@ logger = get_core_logger(__name__)
 # ============================================================================
 # Lifespan
 # ============================================================================
-# @asynccontextmanager
-# async def lifespan(app: FastAPI):
-#     # Admin seeding moved to an Alembic data migration.
-#     # See App/api/databases/migrations/versions/<...>_seed_admin.py.
-#     # If you haven't migrated yet, keep the call but wrap it in try/except
-#     # so a race between workers doesn't kill startup. See CreateAdmin.py.
-#     try:
-#         await create_admin()
-#     except Exception:
-#         # Non-fatal: another worker may have already created the admin,
-#         # or the migration already seeded it. Log and continue.
-#         logger.exception("Admin seed skipped (likely already done)")
-
-#     try:
-#         await redis_client.connect()
-#         logger.info("App started")
-#     except Exception:
-#         logger.exception("Redis unavailable during startup; continuing in degraded mode")
-#         logger.warning("App started in degraded mode without Redis")
-#     try:
-#         minio_storage.connect()
-#         health = await minio_storage.health_check()
-#         if health["connected"]:
-#             logger.info("MinIO connected")
-#         else:
-#             logger.warning(f"MinIO unreachable at startup: {health.get('error')}")
-#     except Exception:
-#         logger.exception("MinIO init failed; object storage may be unavailable")
-#     yield
-
-#     # Graceful shutdown: close DB pool then Redis
-#     minio_storage.disconnect()
-#     await database.disconnect()
-#     await redis_client.disconnect()
-#     logger.info("App stopped")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -144,19 +109,6 @@ def _redact(value, depth: int = 0):
     return value
 
 
-def _redact(value, depth: int = 0):
-    if depth > 10:
-        return "***redacted***"
-    if isinstance(value, dict):
-        return {
-            k: ("***redacted***" if str(k).lower() in _SENSITIVE_KEYS else _redact(v, depth + 1))
-            for k, v in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact(v, depth + 1) for v in value]
-    return value
-
-
 def _redact_errors(errors: list) -> list:
     out = []
     for err in errors:
@@ -167,7 +119,7 @@ def _redact_errors(errors: list) -> list:
         else:
             err["input"] = _redact(err.get("input"))
 
-        # FIX: Pydantic v2 puts a live exception in ctx.error — not JSON serializable
+        # FIX: Pydantic v2 puts a live exception in ctx.error -- not JSON serializable
         ctx = err.get("ctx")
         if isinstance(ctx, dict):
             err["ctx"] = {
@@ -216,7 +168,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
         },
     )
 # ============================================================================
-# Database down — handled globally so every endpoint returns the same shape
+# Database down -- handled globally so every endpoint returns the same shape
 # ============================================================================
 @app.exception_handler(OperationalError)
 async def db_operational_handler(request: Request, exc: OperationalError):
@@ -269,16 +221,16 @@ async def redis_error_handler(request: Request, exc: RedisError):
     )
 
 
- 
+
 
 # ============================================================================
-# Domain errors — 400 by default, 404 for *NotFound
+# Domain errors -- 400 by default, 404 for *NotFound
 # ============================================================================
 @app.exception_handler(DomainError)
 async def domain_error_handler(request: Request, exc: DomainError):
     req_id = getattr(request.state, "request_id", "-")
 
-    # InfrastructureError is a subclass of DomainError — must be checked first
+    # InfrastructureError is a subclass of DomainError -- must be checked first
     if isinstance(exc, InfrastructureError):
         return JSONResponse(
             status_code=503,
@@ -291,7 +243,7 @@ async def domain_error_handler(request: Request, exc: DomainError):
             },
         )
 
-    # *NotFound → 404, *AlreadyExists / Duplicate → 409, everything else 400
+    # *NotFound -> 404, *AlreadyExists / Duplicate -> 409, everything else 400
     name = type(exc).__name__
     if name.endswith("NotFoundError"):
         code = 404
@@ -416,7 +368,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         headers=getattr(exc, "headers", None),
     )
 # ============================================================================
-# Middleware — order matters (last added = outermost)
+# Middleware -- order matters (last added = outermost)
 # ============================================================================
 app.add_middleware(RequestIDMiddleware, header_name="X-Request-ID")   # innermost
 app.add_middleware(BodySizeLimitMiddleware, max_size=settings.MAX_BODY_SIZE)
@@ -447,9 +399,9 @@ async def health_check(request: Request, db: AsyncSession = Depends(get_db)):
     Composite readiness check.
 
     Returns:
-        200 healthy  — all dependencies OK
-        200 degraded — service serving but a soft dependency (e.g. auto-kill) is off
-        503 unhealthy — a hard dependency (DB, Redis) is down
+        200 healthy  -- all dependencies OK
+        200 degraded -- service serving but a soft dependency (e.g. auto-kill) is off
+        503 unhealthy -- a hard dependency (DB, Redis) is down
     """
     checks = {
         "db": "unknown",
@@ -499,30 +451,14 @@ async def health_check(request: Request, db: AsyncSession = Depends(get_db)):
     except Exception:
         checks["migration"] = "unavailable"
 
-    status_code = 200 if overall in ("healthy", "degraded") else 503
+    status_code = 503 if overall == "unhealthy" else 200
     return JSONResponse(
         status_code=status_code,
         content={
             "status": overall,
-            "version": "0.0.1",
             "checks": checks,
+            "request_id": getattr(request.state, "request_id", "-"),
         },
     )
 
-
-@app.get("/health/live", tags=["System"])
-async def liveness():
-    """Liveness probe — is the process alive? Does not touch dependencies."""
-    return {"status": "alive"}
-
-
-@app.get("/health/ready", tags=["System"])
-async def readiness(db: AsyncSession = Depends(get_db)):
-    """Readiness probe — alias for /health, used by K8s readiness probes."""
-    return await health_check(request=None, db=db)
-
-
-# ============================================================================
-# Routers LAST
-# ============================================================================
 app.include_router(app_router, prefix="/app/v1")

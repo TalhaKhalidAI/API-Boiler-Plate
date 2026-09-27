@@ -31,7 +31,7 @@ async def store_refresh(jti: str, user_id: int, family_id: str, ttl: int) -> Non
     pipe.expire(user_families_key(user_id), ttl)
     await pipe.execute()
 
-## use token and delete it from redis. If already used, return None. Otherwise, return the metadata and mark as revoked so reuse can be detected. its like janu dkh k dleete kar du ga
+## use token and delete it from redis. If already used, return None. Otherwise, return the metadata and mark as revoked so reuse can be detected.
 async def consume_refresh(jti: str, revoke_ttl: int = 7 * 24 * 3600) -> Optional[dict]:
     """
     Atomic get+delete. Returns None if already used/expired.
@@ -46,7 +46,7 @@ async def consume_refresh(jti: str, revoke_ttl: int = 7 * 24 * 3600) -> Optional
     await c.set(revoked_rt_key(jti), "1", ex=revoke_ttl)
     return parsed
 
-### revoke a refresh token by marking it as revoked until its natural expiry. This is useful for logging out users or invalidating tokens without waiting for them to expire naturally. Janu k pic dkhi hilaya naha k dosto ko send kar iya or new neudes mungwai lol
+### revoke a refresh token by marking it as revoked until its natural expiry. This is useful for logging out users or invalidating tokens without waiting for them to expire naturally.
 async def revoke_refresh(jti: str, ttl: int) -> None:
     """Mark a refresh token as revoked and invalidate its stored payload immediately."""
     c = await redis_client.ensure_connected()
@@ -58,7 +58,6 @@ async def is_refresh_revoked(jti: str) -> bool:
     c = await redis_client.ensure_connected()
     return await c.exists(revoked_rt_key(jti)) == 1
 
-## janu n nudes leak wali bat pakar li to use goli karwana 
 async def revoke_family(family_id: str, revoke_ttl: int = 7 * 24 * 3600) -> None:
     """
     Kill every refresh token in a family.
@@ -111,21 +110,11 @@ async def is_access_blocked(jti: str) -> bool:
 
 # ========== LOGIN RATE LIMIT ==========
 
-# async def check_login_rate(
-#     email: str, ip: str, max_attempts: int = 10, window: int = 300
-# ) -> bool:
-#     """Returns True if allowed, False if rate-limited."""
-#     key = login_attempts_key(email, ip)
-#     c = await redis_client.ensure_connected()
-#     count = await c.incr(key)
-#     if count == 1:
-#         await c.expire(key, window)
-#     return count <= max_attempts
-
 async def clear_user_families(user_id: int) -> None:
     """Delete the user's family-tracking set entirely."""
     c = await redis_client.ensure_connected()
     await c.delete(user_families_key(user_id))
+
 async def check_login_rate(
     identifier: str,
     ip: str,
@@ -146,4 +135,3 @@ async def check_login_rate(
     if count == 1:
         await c.expire(key, window)
     return count <= max_attempts
-
