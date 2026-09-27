@@ -8,7 +8,9 @@ from App.core.RedisConnector import redis_client
 from App.core.exceptions import DomainError, UserNotFoundError,AccountAlreadyDisabledError,PasswordRequiredError,IncorrectPasswordError,PermissionDeniedError,ValidationError,DuplicateEmailError
 from App.models.Permissions import Permission
 from App.repository.UserRepository import UserRepository
-
+from App.core.LoggingInit import get_core_logger
+from App.core.exceptions import InfrastructureError
+logger=get_core_logger(__name__)
 
 class AdminService:
     """Business logic for admin account, permission, and security flows."""
