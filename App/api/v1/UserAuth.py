@@ -226,7 +226,7 @@ async def logout(
     # -------- 3. Revoke refresh (kills rotation family too) --------
     if refresh_value:
         try:
-            if await AuthService(db=None).revoke_session(refresh_value):
+            if await AuthService(db=None).revoke_all_sessions_for_user(user_id):
                 revoked_any = True
                 logger.info(f"[{req_id}] Revoked refresh token during logout")
         except Exception:

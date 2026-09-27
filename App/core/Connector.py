@@ -12,7 +12,7 @@ import logging
 from tenacity import retry, stop_after_attempt, wait_exponential
 from App.core.settings import settings
 from App.core.exceptions import InfrastructureError
-
+import asyncio
 logger = logging.getLogger(__name__)
 
 class Database:
@@ -177,20 +177,24 @@ class Database:
                 yield session
                 await session.commit()
             except OperationalError as e:
-                # Genuine connection-level failure.
                 await session.rollback()
                 self._is_connected = False
-                self._connection_error = str(e)
                 logger.error(f"Database operational error: {e}")
                 raise
             except SQLAlchemyError as e:
-                # Genuine SQL-level failure (constraint violation, bad query, ...).
                 await session.rollback()
                 logger.error(f"Database SQL error: {e}")
                 raise
+            except (ConnectionError, OSError, asyncio.TimeoutError) as e:
+                # Raw driver/network failure SQLAlchemy didn't wrap as
+                # OperationalError — classify it so main.py's handlers and
+                # engage_auto_kill() actually fire, instead of falling through
+                # to the generic 500 catch-all.
+                await session.rollback()
+                self._is_connected = False
+                logger.error(f"Database connection-level failure (unwrapped): {e}")
+                raise InfrastructureError(f"Database connection lost: {e}") from e
             except Exception:
-                # Business exceptions and anything else. Roll back so we
-                # don't half-commit, but do NOT relabel the exception.
                 await session.rollback()
                 raise
             finally:
@@ -215,22 +219,14 @@ database = Database()
 # FastAPI dependency
 # =====================================================================
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """
-    FastAPI dependency that yields a database session.
-
-    Infrastructure failures propagate to main.py's exception handlers,
-    which return a consistent 503 shape (with request_id and Retry-After)
-    on every endpoint. Route-level HTTPExceptions pass through untouched.
-
-    No local try/except — catching here would convert the exception
-    class before the global handlers could match on it.
-    """
     if not database.is_connected:
-        await database.connect()   # raises InfrastructureError on failure
-
+        try:
+            await database.connect()
+        except Exception as e:
+            logger.error(f"DB connection failed in get_db: {e}")
+            raise InfrastructureError("Database unavailable") from e
     async with database.session() as session:
         yield session
-
 
 # =====================================================================
 # Repository base

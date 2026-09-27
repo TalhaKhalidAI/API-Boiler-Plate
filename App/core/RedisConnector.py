@@ -46,7 +46,6 @@ class RedisClient:
     async def connect(self) -> None:
         """Connect (or no-op if already connected). Serialized by lock."""
         async with self._connect_lock:
-            # Another coroutine may have connected while we waited on the lock.
             if self._client is not None and self._is_connected:
                 return
             await self._connect_unlocked()
@@ -74,23 +73,57 @@ class RedisClient:
             raise RuntimeError("Redis not connected. Call connect() first.")
         return self._client
 
-    async def ensure_connected(self) -> redis.Redis:
+    async def ensure_connected(self, retries: int = 1) -> redis.Redis:
         """
-        Return a live client, reconnecting if needed.
+        Return a live, VERIFIED Redis client — reconnecting if needed.
 
-        Double-checked pattern: fast path when already connected, then
-        serialize reconnect through the lock so N concurrent callers
-        produce ONE new client, not N.
+        Unlike a plain flag check, this PINGS the cached client before
+        handing it back, every time. A Redis that died silently after a
+        previous successful connect is caught right here, at the point
+        of use, and raises a clean InfrastructureError instead of handing
+        callers a dead client that fails unpredictably somewhere downstream.
+
+        retries: number of reconnect attempts after the first failure
+        before giving up and raising. Each retry has a short backoff.
         """
-        if self._client is not None and self._is_connected:
-            return self._client
-
         async with self._connect_lock:
-            # Re-check inside the lock: another coroutine may have
-            # reconnected while we were waiting.
-            if self._client is None or not self._is_connected:
-                await self._connect_unlocked()
-            return self._client
+            last_error: Exception | None = None
+
+            for attempt in range(retries + 1):
+                # Case 1: we believe we're connected — verify for real.
+                if self._client is not None and self._is_connected:
+                    try:
+                        await self._client.ping()
+                        return self._client
+                    except (RedisError, OSError, ConnectionError, TimeoutError) as e:
+                        logger.warning(
+                            f"Redis ping failed on cached client "
+                            f"(attempt {attempt + 1}/{retries + 1}): {e}"
+                        )
+                        last_error = e
+                        self._is_connected = False
+                        try:
+                            await self._client.aclose()
+                        except Exception:
+                            pass
+                        self._client = None
+
+                # Case 2: not connected (or just detected dead) — (re)connect.
+                try:
+                    await self._connect_unlocked()
+                    return self._client
+                except InfrastructureError as e:
+                    last_error = e
+                    if attempt < retries:
+                        await asyncio.sleep(0.2 * (attempt + 1))
+                        continue
+                    # Out of retries — raise the clean, classified error.
+                    raise
+
+            # Unreachable in practice, but keeps control flow explicit.
+            raise InfrastructureError(
+                f"Redis unavailable after {retries + 1} attempts"
+            ) from last_error
 
 
 redis_client = RedisClient()
@@ -100,7 +133,8 @@ async def get_redis() -> redis.Redis:
     """
     FastAPI dependency.
 
-    Calls ensure_connected() so a Redis blip reconnects instead of
-    raising, which would 500 every request that touches Redis.
+    Calls ensure_connected(), which now verifies liveness on every call
+    (not just on first connect) and raises InfrastructureError — caught
+    globally by main.py's exception handler — if Redis is genuinely down.
     """
     return await redis_client.ensure_connected()

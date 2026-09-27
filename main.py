@@ -102,7 +102,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Redis unavailable during startup; continuing in degraded mode")
 
- 
+
     logger.info("App started")
     yield
 
@@ -357,12 +357,6 @@ async def infrastructure_error_handler(request: Request, exc: InfrastructureErro
 
 @app.exception_handler(RuntimeError)
 async def runtime_error_handler(request: Request, exc: RuntimeError):
-    """
-    Safety net for RuntimeError. In our codebase, RuntimeError is only
-    raised by RedisConnector when Redis is unavailable. Ideally that
-    should be InfrastructureError, but until RedisConnector is fixed,
-    this catches it and returns 503 instead of 500.
-    """
     req_id = getattr(request.state, "request_id", "-")
     logger.exception(f"[{req_id}] RuntimeError: {exc}")
     return JSONResponse(
@@ -370,7 +364,7 @@ async def runtime_error_handler(request: Request, exc: RuntimeError):
         headers={"Retry-After": "30"},
         content={
             "error": "infrastructure_unavailable",
-            "message": str(exc) or "Service temporarily unavailable",
+            "message": "Service temporarily unavailable",  # hardcode it
             "status": 503,
             "request_id": req_id,
         },
