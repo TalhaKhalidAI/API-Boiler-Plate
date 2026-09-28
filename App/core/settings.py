@@ -42,6 +42,17 @@ class Settings(BaseSettings):
         default="HS256",
         pattern="^(HS256|HS384|HS512|RS256|RS384|RS512|ES256|ES384|ES512|PS256|PS384|PS512)$"
     )
+    MAX_DECOMPRESSED_BODY_SIZE: int = Field(
+        default=4 * 1024 * 1024,
+        ge=1,
+        description="Maximum decompressed request body size in bytes",
+    )
+    ENABLE_GZIP:bool=Field(False,description="enable gzip ")
+
+    GZIP_COMPRESS_LEVEL: int = Field(
+        default=5, ge=1, le=9,
+        description="gzip compression level (1=fastest, 9=smallest)"
+    )
     
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(
         default=15,                          # ← also change this to 15

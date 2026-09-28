@@ -39,6 +39,8 @@ from App.core.exceptions import (
     InfrastructureError,
     PermissionDeniedError
 )
+from App.middleware.gzip_request_middleware import GZipRequestMiddleware
+from App.middleware.gzip_response_middleware import GZipResponseMiddleware
 from redis.exceptions import RedisError
 from App.middleware.kill_switch_middleware import  engage_auto_kill
 logger = get_core_logger(__name__)
@@ -370,8 +372,11 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 # ============================================================================
 # Middleware -- order matters (last added = outermost)
 # ============================================================================
+if settings.ENABLE_GZIP:
+    app.add_middleware(GZipResponseMiddleware)
+    app.add_middleware(GZipRequestMiddleware)
+app.add_middleware(BodySizeLimitMiddleware, max_size=settings.GZIP_COMPRESS_LEVEL)
 app.add_middleware(RequestIDMiddleware, header_name="X-Request-ID")   # innermost
-app.add_middleware(BodySizeLimitMiddleware, max_size=settings.MAX_BODY_SIZE)
 app.add_middleware(
     GlobalRateLimitMiddleware,
     default_limit=settings.RATE_LIMIT_DEFAULT or "100/minute",
