@@ -195,6 +195,67 @@ class Settings(BaseSettings):
         le=64,
         description="Length of salt for password hashing"
     )
+
+    # Email Configuration
+    EMAIL_ENABLED: bool = Field(
+        default=False,
+        description="Enable/disable email sending globally"
+    )
+    EMAIL_SMTP_HOST: str = Field(
+        default="localhost",
+        description="SMTP server hostname"
+    )
+    EMAIL_SMTP_PORT: int = Field(
+        default=1025,
+        description="SMTP server port (587 for TLS, 465 for SSL, 1025 for Mailpit)"
+    )
+    EMAIL_SMTP_USERNAME: str = Field(
+        default="",
+        description="SMTP username (empty for local Mailpit)"
+    )
+    EMAIL_SMTP_PASSWORD: SecretStr = Field(
+        default=SecretStr(""),
+        description="SMTP password (app password for Gmail)"
+    )
+    EMAIL_FROM: str = Field(
+        default="noreply@example.com",
+        description="From email address"
+    )
+    EMAIL_FROM_NAME: str = Field(
+        default="API Boilerplate",
+        description="From display name"
+    )
+    EMAIL_USE_TLS: bool = Field(
+        default=False,
+        description="Use TLS (True for port 587, False for 1025/465)"
+    )
+    EMAIL_USE_SSL: bool = Field(
+        default=False,
+        description="Use SSL (True for port 465, False for 587/1025)"
+    )
+    EMAIL_TIMEOUT: int = Field(
+        default=15,
+        ge=5,
+        le=60,
+        description="SMTP timeout in seconds"
+    )
+    EMAIL_OTP_TTL_SECONDS: int = Field(
+        default=300,
+        ge=60,
+        le=900,
+        description="OTP validity in seconds (default 5 min)"
+    )
+    EMAIL_OTP_MAX_ATTEMPTS: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="Max OTP verification attempts"
+    )
+    EMAIL_CA_BUNDLE: Optional[str] = Field(
+    default="",
+    description="Path to custom root CA bundle for SMTP TLS verification"
+    )
+
     @field_validator('SECRET_KEY', mode='before')
     @classmethod
     def validate_secret_key(cls, v: Any) -> Any:
