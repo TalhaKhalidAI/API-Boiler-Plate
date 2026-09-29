@@ -470,11 +470,24 @@ async def health_check(request: Request, db: AsyncSession = Depends(get_db)):
 app.include_router(app_router, prefix="/app/v1")
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "main:app",  # or pass the app instance directly: app
-        host=settings.LISTEN_IP,
-        port=settings.PORT,
-        reload=settings.AUTO_RELOAD,  # Set to False for compiled executable builds
-        workers=settings.WORKER,
-        
-    )
+    # Detect if running as a compiled Nuitka binary
+    is_compiled = "__compiled__" in globals()
+
+    if is_compiled:
+        # Pass app instance directly for Nuitka binary
+        uvicorn.run(
+            app,
+            host=settings.LISTEN_IP,
+            port=settings.PORT,
+            reload=False,
+            workers=settings.WORKER or 3,
+        )
+    else:
+        # Keep original string syntax for normal development with reload/workers
+        uvicorn.run(
+            "main:app",
+            host=settings.LISTEN_IP,
+            port=settings.PORT,
+            reload=settings.AUTO_RELOAD,
+            workers=settings.WORKER,
+        )
