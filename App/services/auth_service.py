@@ -14,21 +14,41 @@ from App.api.dependencies.auth import (
     get_password_hash,
     validate_password_strength,
 )
-from App.core import token_store
-from App.core.exceptions import DomainError, DuplicateEmailError,RateLimitError,InfrastructureError
+from App.store import token_store
+from App.core.exceptions import DomainError, DuplicateEmailError,RateLimitError,InfrastructureError,MFARequiredError,InvalidMFACodeError
 from App.core.settings import settings
 from App.repository.UserRepository import UserRepository
 from sqlalchemy.ext.asyncio import AsyncSession
+from App.core.LoggingInit import get_core_logger
 
+logger=get_core_logger(__name__)
 class AuthService:
     """Authentication business logic kept separate from HTTP routes."""
 
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def login_user(self, username: str, password: str,ip: str = "unknown",) -> Optional[Dict[str, Any]]:
-        """Authenticate and issue both tokens for a valid user."""
+    async def login_user(
+        self,
+        username: str,
+        password: str,
+        mfa_code: Optional[str] = None,
+        ip: str = "unknown",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Single-step login with optional MFA.
 
+        Behavior:
+          - No MFA enabled on user → issue tokens immediately.
+          - MFA enabled, no code        → raise MFARequiredError(method=...)
+          - MFA enabled, bad code       → raise InvalidMFACodeError
+          - MFA enabled, valid code     → issue tokens
+
+        MFA method is chosen per-user (users.mfa_method):
+          - "totp"  → pyotp against stored secret
+          - "email" → Redis OTP from /auth/email_otp/send with purpose='login_2fa'
+        """
+        # ── Rate limit ──────────────────────────────────────────────
         try:
             allowed = await token_store.check_login_rate(
                 identifier=username,
@@ -38,26 +58,71 @@ class AuthService:
             )
         except (RedisError, RuntimeError) as exc:
             raise InfrastructureError("Redis unavailable during login") from exc
+
         if not allowed:
             raise RateLimitError("Too many login attempts. Try again in a few minutes.")
+
+        # ── Password verification ───────────────────────────────────
         user = await authenticate_user(username, password, self.db)
         if not user:
             return None
+
+        # ── MFA gate ────────────────────────────────────────────────
+        if settings.ENABLE_MFA:
+            repo = UserRepository(self.db)
+            full_user = await repo.get_by_id(user["id"])
+
+            if full_user and full_user.mfa_enabled:
+                method = full_user.mfa_method or "totp"
+
+                if not mfa_code:
+                    raise MFARequiredError(method=method)
+
+                # MFAService handles both "totp" and "email" internally.
+                from App.services.mfa_service import MFAService
+                ok = await MFAService(self.db).verify_for_login(full_user, mfa_code)
+                if not ok:
+                    logger.warning(
+                        f"MFA verification failed for user {user['id']} method={method}"
+                    )
+                    raise InvalidMFACodeError()
+
+                logger.info(
+                    f"MFA verified for user {user['id']} method={method}"
+                )
+
+        # ── Issue tokens (no MFA or MFA passed) ─────────────────────
+        return await self.issue_tokens_for_user(
+            user_id=user["id"],
+            email=user["email"],
+            name=user["name"],
+            role=user["role"],
+        )
+
+    async def issue_tokens_for_user(
+        self,
+        user_id: int,
+        email: str,
+        name: str,
+        role: str,
+    ) -> Dict[str, Any]:
+        """Unchanged — token issuance logic."""
         family_id = str(uuid.uuid4())
+
         access_token = create_access_token(
             data={
                 "type": "token",
-                "sub": user["email"],
-                "user_id": user["id"],
-                "name": user["name"],
-                "role": user["role"],
+                "sub": email,
+                "user_id": user_id,
+                "name": name,
+                "role": role,
             }
         )
         refresh_token = create_refresh_token(
             data={
                 "type": "rf_token",
-                "sub": user["email"],
-                "user_id": user["id"],
+                "sub": email,
+                "user_id": user_id,
             },
             family_id=family_id,
         )
@@ -71,26 +136,31 @@ class AuthService:
         try:
             await token_store.store_refresh(
                 jti=jti,
-                user_id=user["id"],
+                user_id=user_id,
                 family_id=family_id,
                 ttl=settings.REFRESH_TOKEN_TTL_SECONDS,
             )
-            # NEW: track family under user for logout-everywhere
             await token_store.track_family_for_user(
-                user_id=user["id"],
+                user_id=user_id,
                 family_id=family_id,
                 ttl=settings.REFRESH_TOKEN_TTL_SECONDS,
-                    )
+            )
         except (RedisError, RuntimeError) as exc:
             raise InfrastructureError("Redis unavailable during login") from exc
 
         return {
-            "user": user,
+            "user": {
+                "id": user_id,
+                "email": email,
+                "name": name,
+                "role": role,
+            },
             "access_token": access_token,
             "refresh_token": refresh_token,
             "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         }
 
+ 
     async def register_user(self, user_data) -> Any:
         """Validate and create a new user without exposing repo logic to the route."""
         repo = UserRepository(self.db)
@@ -153,6 +223,7 @@ class AuthService:
             if family:
                 await token_store.revoke_family(
                     family,
+                    user_id=user_id,
                     revoke_ttl=settings.REFRESH_TOKEN_TTL_SECONDS,
                 )
                 # Remove from user's tracking set — this family is now dead
@@ -179,6 +250,7 @@ class AuthService:
             for fam in families:
                 await token_store.revoke_family(
                     fam,
+                    user_id=user_id,
                     revoke_ttl=settings.REFRESH_TOKEN_TTL_SECONDS,
                 )
             # Clear the tracking set itself

@@ -113,7 +113,7 @@ async def update_account(
 
     except HTTPException:
         raise
-    except PermissionError as e:
+    except PermissionDeniedError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
@@ -164,7 +164,7 @@ async def disable_account(
 
     except HTTPException:
         raise
-    except PermissionError as e:
+    except PermissionDeniedError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
@@ -292,7 +292,7 @@ async def temp_token_maker(
 
     except HTTPException:
         raise
-    except PermissionError as e:
+    except PermissionDeniedError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
@@ -328,7 +328,7 @@ async def reset_auto_kill(
         result = await service.reset_auto_kill(current_user)
         logger.info(f"[{req_id}] Safety mode reset by admin: {current_user.get('email')}")
         return result
-    except PermissionError as e:
+    except PermissionDeniedError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception:
         logger.exception(f"[{req_id}] Failed to clear auto-kill Redis key")
@@ -377,7 +377,7 @@ async def delete_account(
 
     except HTTPException:
         raise
-    except PermissionError as e:
+    except PermissionDeniedError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
@@ -428,7 +428,7 @@ async def restore_account(
 
     except HTTPException:
         raise
-    except PermissionError as e:
+    except PermissionDeniedError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
@@ -486,7 +486,7 @@ async def update_password(
 
     except HTTPException:
         raise
-    except PermissionError as e:
+    except PermissionDeniedError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")

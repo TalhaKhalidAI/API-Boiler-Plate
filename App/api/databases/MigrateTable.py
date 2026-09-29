@@ -19,3 +19,6 @@ class User(Base):  # Changed from Users to User (singular, PEP8)
     permissions = Column(JSON, default=dict)  # FIX: mutable default avoided
     is_deleted = Column(Boolean, default=False)
     deleted_at = Column(DateTime, nullable=True)
+    mfa_enabled=Column(Boolean,default=False,nullable=False)
+    mfa_secret_encrypted = Column(String(500), nullable=True)
+    mfa_method = Column(String(20), nullable=True)

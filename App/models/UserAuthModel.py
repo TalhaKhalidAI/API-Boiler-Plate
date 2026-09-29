@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, field_validator,SecretStr,ConfigDict
+from pydantic import BaseModel, EmailStr, field_validator,SecretStr,ConfigDict,Field
 from typing import Optional
 import re
 
@@ -6,7 +6,7 @@ class LoginUser(BaseModel):
     """Login model with proper validation"""
     username: str
     password: SecretStr
-
+    mfa_code: Optional[str] = Field(None, min_length=6, max_length=6)
     @field_validator("username")
     def validate_username(cls, v):
         """Validate username/email format"""
@@ -55,12 +55,12 @@ class User(BaseModel):
             raise ValueError("Name cannot be empty")
         return v
 
-    @field_validator("email")
-    def email_must_be_valid_format(cls, v):
-        email_regex = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
-        if not email_regex.match(v):
-            raise ValueError("Invalid email format")
-        return v     # <- validator #2: hand-rolled regex
+    # @field_validator("email")
+    # def email_must_be_valid_format(cls, v):
+    #     email_regex = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
+    #     if not email_regex.match(v):
+    #         raise ValueError("Invalid email format")
+    #     return v     # <- validator #2: hand-rolled regex
 
 class UpdateUser(BaseModel):
     name: str | None = None

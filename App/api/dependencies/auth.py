@@ -28,7 +28,7 @@ from App.core.settings import settings
 from App.core.Connector import get_db
 from App.repository.UserRepository import UserRepository
 from App.core.LoggingInit import get_core_logger
-from App.core import token_store
+from App.store import token_store
 logger = get_core_logger(__name__)
 
 # ============================================================================
@@ -259,6 +259,7 @@ def _user_dict(user, payload: Dict[str, Any]) -> Dict[str, Any]:
         "token_type": payload.get("type"),
         "token_purpose": payload.get("purpose"),
         "types": payload.get("types"),
+        "mfa_enabled": user.mfa_enabled,     # ← NEW
     }
 
 

@@ -21,13 +21,15 @@ from App.schemas.AuthScheema import TokenResponse, UserResponse
 from App.models.UserAuthModel import User, UpdateUser, LoginUser
 from App.core.LoggingInit import get_core_logger
 from App.core.Connector import get_db
-from App.core import token_store
+from App.store import token_store
 from App.core.settings import settings
 from App.core.exceptions import (
     DuplicateEmailError,
     UserNotFoundError,
     DomainError,
-    RateLimitError
+    RateLimitError,
+       MFARequiredError,          # ← NEW
+    InvalidMFACodeError,    
 )
 from App.services.auth_service import AuthService
 from App.api.dependencies.auth import (
@@ -63,8 +65,7 @@ async def login(
     try:
         password = form_data.password.get_secret_value()
         client_ip = request.client.host if request.client else "unknown"
-        result = await AuthService(db).login_user(form_data.username, password,ip=client_ip)
-
+        result = await AuthService(db).login_user(form_data.username, password,ip=client_ip,mfa_code=form_data.mfa_code)
         if not result:
             logger.warning(f"[{req_id}] Failed login for {form_data.username}")
             raise HTTPException(
@@ -119,6 +120,20 @@ async def login(
 
     except HTTPException:
         raise
+    except MFARequiredError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"MFA code required (method: {e.method})",
+            headers={
+                "X-MFA-Required": "true",
+                "X-MFA-Method": e.method,
+            },
+        )
+    except InvalidMFACodeError:                       # ← NEW
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid MFA code",
+        )
     except RateLimitError as e:                              # NEW -- insert here
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

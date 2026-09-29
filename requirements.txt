@@ -17,3 +17,9 @@ pytest
 aiosmtplib
 fastapi-mail
 jinja2
+PyOTP
+cryptography
+qrcode[pil]
+pyinstaller
+nuitka
+nuitka patchelf

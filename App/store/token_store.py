@@ -58,13 +58,11 @@ async def is_refresh_revoked(jti: str) -> bool:
     c = await redis_client.ensure_connected()
     return await c.exists(revoked_rt_key(jti)) == 1
 
-async def revoke_family(family_id: str, revoke_ttl: int = 7 * 24 * 3600) -> None:
-    """
-    Kill every refresh token in a family.
-
-    Marks each member revoked_rt:{jti} so reuse-detection fires for
-    descendants too, not just the one token the client sent to logout.
-    """
+async def revoke_family(
+    family_id: str,
+    user_id: Optional[int] = None,
+    revoke_ttl: int = 7 * 24 * 3600,
+) -> None:
     c = await redis_client.ensure_connected()
     jtis = await c.smembers(family_key(family_id))
     if jtis:
@@ -73,6 +71,10 @@ async def revoke_family(family_id: str, revoke_ttl: int = 7 * 24 * 3600) -> None
             pipe.delete(refresh_key(j))
             pipe.set(revoked_rt_key(j), "1", ex=revoke_ttl)
         pipe.delete(family_key(family_id))
+        # Also drop the family_id from the user's tracking set so it
+        # doesn't accumulate forever after natural token expiry.
+        if user_id is not None:
+            pipe.srem(user_families_key(user_id), family_id)
         await pipe.execute()
 
 async def track_family_for_user(user_id: int, family_id: str, ttl: int) -> None:

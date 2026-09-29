@@ -58,9 +58,10 @@ class GZipResponseMiddleware(BaseHTTPMiddleware):
         if isinstance(response, StreamingResponse):
             return response
 
-        body = b""
+        chunks = []
         async for chunk in response.body_iterator:
-            body += chunk
+            chunks.append(chunk)
+        body = b"".join(chunks)
 
         if len(body) < self.minimum_size:
             return Response(

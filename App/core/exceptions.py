@@ -158,3 +158,14 @@ class ValidationError(DomainError):
 
 class IntegrityError(DomainError):
     default_message = "Integrity error"
+class MFARequiredError(DomainError):
+    """User has MFA enabled but no code was provided in the login request."""
+    default_message = "MFA code required"
+
+    def __init__(self, message: str | None = None, method: str = "totp"):
+        super().__init__(message or self.default_message)
+        self.method = method
+class InvalidMFACodeError(DomainError):
+    """The provided MFA code did not match the user's TOTP."""
+    default_message = "Invalid MFA code"
+    

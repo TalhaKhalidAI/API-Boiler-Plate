@@ -255,7 +255,27 @@ class Settings(BaseSettings):
     default="",
     description="Path to custom root CA bundle for SMTP TLS verification"
     )
-
+    LISTEN_IP:Optional[str]=Field("0.0.0.0")
+    PORT:int=Field(8002)
+    AUTO_RELOAD:bool=Field(False)
+    WORKER:int=Field(3)
+#### MFA 
+    ENABLE_MFA: bool = Field(
+        default=False,
+        description="Enable MFA login"
+    )
+    MFA_CHALLENGE_TTL_SECONDS: int = Field(
+        default=300, ge=60, le=900,
+        description="MFA challenge token TTL in seconds"
+    )
+    MFA_MAX_ATTEMPTS: int = Field(
+        default=5, ge=1, le=10,
+        description="Max code attempts per challenge"
+    )
+    MFA_ISSUER_NAME: str = Field(
+        default="API Boilerplate",
+        description="Issuer name shown in authenticator apps"
+    )
     @field_validator('SECRET_KEY', mode='before')
     @classmethod
     def validate_secret_key(cls, v: Any) -> Any:

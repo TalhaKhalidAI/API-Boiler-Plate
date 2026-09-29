@@ -43,6 +43,7 @@ from App.middleware.gzip_request_middleware import GZipRequestMiddleware
 from App.middleware.gzip_response_middleware import GZipResponseMiddleware
 from redis.exceptions import RedisError
 from App.middleware.kill_switch_middleware import  engage_auto_kill
+import uvicorn
 logger = get_core_logger(__name__)
 
 
@@ -375,7 +376,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 if settings.ENABLE_GZIP:
     app.add_middleware(GZipResponseMiddleware)
     app.add_middleware(GZipRequestMiddleware)
-app.add_middleware(BodySizeLimitMiddleware, max_size=settings.GZIP_COMPRESS_LEVEL)
+app.add_middleware(BodySizeLimitMiddleware, max_size=settings.MAX_BODY_SIZE)
 app.add_middleware(RequestIDMiddleware, header_name="X-Request-ID")   # innermost
 app.add_middleware(
     GlobalRateLimitMiddleware,
@@ -467,3 +468,13 @@ async def health_check(request: Request, db: AsyncSession = Depends(get_db)):
     )
 
 app.include_router(app_router, prefix="/app/v1")
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",  # or pass the app instance directly: app
+        host=settings.LISTEN_IP,
+        port=settings.PORT,
+        reload=settings.AUTO_RELOAD,  # Set to False for compiled executable builds
+        workers=settings.WORKER,
+        
+    )

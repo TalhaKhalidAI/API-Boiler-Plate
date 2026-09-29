@@ -54,3 +54,6 @@ pnpm-workspace.yaml
 .aider*
 test
 test**
+App/templates**
+App/certs**
+dist**
