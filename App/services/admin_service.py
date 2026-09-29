@@ -9,7 +9,8 @@ from App.core.exceptions import DomainError, UserNotFoundError,AccountAlreadyDis
 from App.models.Permissions import Permission
 from App.repository.UserRepository import UserRepository
 from App.core.LoggingInit import get_core_logger
-from App.core.exceptions import InfrastructureError
+from App.core.exceptions import InfrastructureError,MFARequiredError,InvalidMFACodeError
+from App.services.mfa_service import MFAService
 logger=get_core_logger(__name__)
 
 class AdminService:
@@ -447,7 +448,14 @@ class AdminService:
             "restored_by": restored_by,
         }
 
-    async def update_password(self, user_id: int, new_password: str, current_user: Dict[str, Any], old_password: Optional[str]):
+    async def update_password(
+        self,
+        user_id: int,
+        new_password: str,
+        current_user: Dict[str, Any],
+        old_password: Optional[str],
+        otp: str = None,
+    ):
         repo = UserRepository(self.db)
 
         cur_role = current_user.get("role")
@@ -468,6 +476,10 @@ class AdminService:
         can_update_any = is_admin or has_admin_any
         can_update_self = has_user_update and is_self_update
 
+        # ── SLT path: SKIP step-up MFA ─────────────────────────────────
+        # The SLT holder is here because they lost access. Requiring MFA
+        # would defeat the recovery purpose. SLT is already single-use,
+        # 2-minute, and admin-issued.
         if is_slt_token:
             if current_user.get("token_purpose") != "password_restore":
                 raise PermissionDeniedError("SLT token is not valid for password reset")
@@ -487,6 +499,29 @@ class AdminService:
                 "updated_by": "SLT Token",
             }
 
+        # ── Step-up MFA — ACTOR'S OWN MFA ──────────────────────────────
+        # The person performing the action proves themselves with THEIR
+        # own secret from the DB — NOT the target's secret.
+        #
+        #   - Regular user updating self      → their own OTP
+        #   - Admin updating someone else     → admin's own OTP
+        #   - Delegated user updating someone → delegated user's own OTP
+        #
+        # Target's MFA is never checked — they're not the one acting.
+        actor = await repo.get_by_id(cur_id)
+        if actor and actor.mfa_enabled:
+            if not otp:
+                raise MFARequiredError(method=actor.mfa_method or "totp")
+ 
+            ok = await MFAService(self.db)._verify_totp_no_replay(actor, otp)
+            if not ok:
+                logger.warning(
+                    f"Step-up MFA failed: actor={cur_id} target={user_id} "
+                    f"action=password_update"
+                )
+                raise InvalidMFACodeError()
+
+        # ── Admin / delegated: update someone else's password ──────────
         if can_update_any:
             new_hash = get_password_hash(new_password)
             success = await repo.update_password_hash(user_id, new_hash)
@@ -501,6 +536,7 @@ class AdminService:
                 "updated_by": updated_by,
             }
 
+        # ── Self-update: old_password + (actor MFA already verified) ───
         if can_update_self:
             if not old_password:
                 raise ValidationError("Old password is required to change your password")
@@ -519,3 +555,4 @@ class AdminService:
             }
 
         raise PermissionDeniedError("You don't have permission to update this password")
+

@@ -12,11 +12,12 @@ class TokenResponse(BaseModel):
 
 class PasswordConfirmRequest(BaseModel):
     password: Optional[SecretStr] = None
-
+    otp: Optional[str] = None   
 
 class PasswordUpdateRequest(BaseModel):
     new_password: SecretStr
     old_password: SecretStr | None = None
+    otp:Optional[str]=None
 class UpdateUser(BaseModel):
     name: str | None = None
     email: EmailStr | None = None

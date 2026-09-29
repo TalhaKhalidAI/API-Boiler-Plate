@@ -20,7 +20,7 @@ from App.core.settings import settings
 from App.repository.UserRepository import UserRepository
 from sqlalchemy.ext.asyncio import AsyncSession
 from App.core.LoggingInit import get_core_logger
-
+from App.services.mfa_service import MFAService
 logger=get_core_logger(__name__)
 class AuthService:
     """Authentication business logic kept separate from HTTP routes."""
@@ -79,7 +79,7 @@ class AuthService:
                     raise MFARequiredError(method=method)
 
                 # MFAService handles both "totp" and "email" internally.
-                from App.services.mfa_service import MFAService
+                
                 ok = await MFAService(self.db).verify_for_login(full_user, mfa_code)
                 if not ok:
                     logger.warning(

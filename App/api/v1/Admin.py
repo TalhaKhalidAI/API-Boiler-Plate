@@ -480,6 +480,7 @@ async def update_password(
             new_password=passwd.new_password.get_secret_value(),
             current_user=current_user,
             old_password=passwd.old_password.get_secret_value() if passwd.old_password else None,
+            otp=passwd.otp,
         )
         logger.info(f"[{req_id}] Password update processed for user {user_id}")
         return result

@@ -11,7 +11,7 @@ from App.core.exceptions import (
 from App.core.mfa_crypto import encrypt_secret, decrypt_secret
 from App.api.dependencies.auth import verify_password
 from App.repository.UserRepository import UserRepository
-
+from App.store.otp_store import verify_otp
 logger = get_core_logger(__name__)
 
 MFAMethod = Literal["totp", "email"]
@@ -22,7 +22,7 @@ _ENROLL_TTL = 600
 _PURPOSE_ENROLL = "mfa_enroll_email"
 _PURPOSE_LOGIN = "login_2fa"
 _PURPOSE_DISABLE = "mfa_disable"
-
+_TOTP_REPLAY_TTL = 120 
 def mask_email(email: str) -> str:
     """t***@example.com — never echo the full email back."""
     local, _, domain = email.partition("@")
@@ -170,19 +170,15 @@ class MFAService:
     async def verify_for_login(self, user, code: str) -> bool:
         """
         Verify a code during login. Picks the method from user.mfa_method.
-        - TOTP: pyotp against stored secret
+        - TOTP: pyotp against stored secret + replay guard
         - Email: check against Redis OTP for purpose='login_2fa'
         """
         method = user.mfa_method or "totp"
 
         if method == "totp":
-            if not user.mfa_secret_encrypted:
-                return False
-            secret = decrypt_secret(user.mfa_secret_encrypted)
-            return pyotp.TOTP(secret).verify(code, valid_window=1)
+            return await self._verify_totp_no_replay(user, code)   # ← CHANGE
 
         if method == "email":
-            from App.store.otp_store import verify_otp
             return await verify_otp(user.email, _PURPOSE_LOGIN, code)
 
         return False
@@ -359,3 +355,35 @@ class MFAService:
             "message": f"Code sent to {mask_email(user.email)}",
             "expires_in": settings.EMAIL_OTP_TTL_SECONDS,
         }
+
+    async def _verify_totp_no_replay(self, user, code: str) -> bool:
+        """
+        Verify a TOTP code AND ensure it hasn't been used before.
+
+        pyotp.verify has no memory — the same 6-digit code is accepted for
+        ~90 seconds (valid_window=1 → 3 slots). Without this guard, an
+        attacker who captures the code can replay it.
+        """
+        from App.core.RedisConnector import redis_client
+
+        if not user.mfa_secret_encrypted:
+            return False
+
+        c = await redis_client.ensure_connected()
+        used_key = f"mfa_used:{user.id}:{code}"
+
+        # Fast path — already used?
+        if await c.exists(used_key):
+            logger.warning(f"TOTP replay detected: user={user.id}")
+            return False
+
+        secret = decrypt_secret(user.mfa_secret_encrypted)
+        if not pyotp.TOTP(secret).verify(code, valid_window=1):
+            return False
+
+        # Claim with NX as final race guard
+        claimed = await c.set(used_key, "1", ex=_TOTP_REPLAY_TTL, nx=True)
+        if not claimed:
+            logger.warning(f"TOTP concurrent use: user={user.id}")
+            return False
+        return True
