@@ -37,7 +37,9 @@ from App.core.exceptions import (
     UserNotFoundError,
     DuplicateEmailError,
     AccountAlreadyDisabledError,
-    PermissionDeniedError
+    PermissionDeniedError,
+    MFARequiredError,
+    InvalidMFACodeError,
 )
 from App.schemas.AuthScheema import UserResponse, PasswordConfirmRequest,PasswordUpdateRequest
 from App.models.UserAuthModel import UpdateUser
@@ -157,13 +159,19 @@ async def disable_account(
     req_id = getattr(request.state, "request_id", "-")
     try:
         pwd = payload.password.get_secret_value() if payload and payload.password else None
+        otp = payload.otp if payload else None
         service = AdminService(db)
-        result = await service.disable_account(user_id, pwd, current_user)
+        result = await service.disable_account(user_id, pwd, current_user, otp=otp)
         logger.info(f"[{req_id}] User {current_user.get('id')} disabled user {user_id}")
         return result
 
     except HTTPException:
         raise
+    except MFARequiredError as e:
+        raise HTTPException(status_code=401, detail=f"MFA code required (method: {e.method})",
+            headers={"X-MFA-Required": "true", "X-MFA-Method": e.method})
+    except InvalidMFACodeError:
+        raise HTTPException(status_code=401, detail="Invalid MFA code")
     except PermissionDeniedError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except UserNotFoundError:
@@ -213,13 +221,19 @@ async def enable_account(
     req_id = getattr(request.state, "request_id", "-")
     try:
         pwd = payload.password.get_secret_value() if payload and payload.password else None
+        otp = payload.otp if payload else None
         service = AdminService(db)
-        result = await service.enable_account(user_id, pwd, current_user)
+        result = await service.enable_account(user_id, pwd, current_user, otp=otp)
         logger.info(f"[{req_id}] Enable action processed for user {user_id}")
         return result
 
     except HTTPException:
         raise
+    except MFARequiredError as e:
+        raise HTTPException(status_code=401, detail=f"MFA code required (method: {e.method})",
+            headers={"X-MFA-Required": "true", "X-MFA-Method": e.method})
+    except InvalidMFACodeError:
+        raise HTTPException(status_code=401, detail="Invalid MFA code")
     except PermissionDeniedError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except UserNotFoundError:
@@ -264,6 +278,7 @@ async def temp_token_maker(
     db: AsyncSession = Depends(get_db),
     cookie_login: bool = False,
     restore_passwd: bool = False,
+    otp: Optional[str] = Query(None, description="MFA OTP/TOTP (required if admin has MFA enabled)"),
 ):
     req_id = getattr(request.state, "request_id", "-")
     try:
@@ -274,6 +289,7 @@ async def temp_token_maker(
             db=db,
             cookie_login=cookie_login,
             restore_passwd=restore_passwd,
+            otp=otp,
         )
         if cookie_login:
             response.set_cookie(
@@ -292,6 +308,11 @@ async def temp_token_maker(
 
     except HTTPException:
         raise
+    except MFARequiredError as e:
+        raise HTTPException(status_code=401, detail=f"MFA code required (method: {e.method})",
+            headers={"X-MFA-Required": "true", "X-MFA-Method": e.method})
+    except InvalidMFACodeError:
+        raise HTTPException(status_code=401, detail="Invalid MFA code")
     except PermissionDeniedError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except UserNotFoundError:
@@ -321,13 +342,19 @@ async def temp_token_maker(
 async def reset_auto_kill(
     request: Request,
     current_user: Dict[str, Any] = Depends(require_permission(required_permissions=[Permission.ADMIN_SYSTEM_KILL_SWITCH],mode="any",bypass_admin=False,additional_dependency=get_current_user)),
+    otp: Optional[str] = Query(None, description="MFA OTP/TOTP (required if admin has MFA enabled)"),
 ):
     req_id = getattr(request.state, "request_id", "-")
     try:
         service = AdminService(None)
-        result = await service.reset_auto_kill(current_user)
+        result = await service.reset_auto_kill(current_user, otp=otp)
         logger.info(f"[{req_id}] Safety mode reset by admin: {current_user.get('email')}")
         return result
+    except MFARequiredError as e:
+        raise HTTPException(status_code=401, detail=f"MFA code required (method: {e.method})",
+            headers={"X-MFA-Required": "true", "X-MFA-Method": e.method})
+    except InvalidMFACodeError:
+        raise HTTPException(status_code=401, detail="Invalid MFA code")
     except PermissionDeniedError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception:
@@ -418,16 +445,22 @@ async def restore_account(
         )
     ),
     db: AsyncSession = Depends(get_db),
+    otp: Optional[str] = Query(None, description="MFA OTP/TOTP (required if actor has MFA enabled)"),
 ):
     req_id = getattr(request.state, "request_id", "-")
     try:
         service = AdminService(db)
-        result = await service.restore_account(user_id, current_user)
+        result = await service.restore_account(user_id, current_user, otp=otp)
         logger.info(f"[{req_id}] Restore action processed for user {user_id}")
         return result
 
     except HTTPException:
         raise
+    except MFARequiredError as e:
+        raise HTTPException(status_code=401, detail=f"MFA code required (method: {e.method})",
+            headers={"X-MFA-Required": "true", "X-MFA-Method": e.method})
+    except InvalidMFACodeError:
+        raise HTTPException(status_code=401, detail="Invalid MFA code")
     except PermissionDeniedError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except UserNotFoundError:

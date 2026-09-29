@@ -12,7 +12,7 @@ class TokenResponse(BaseModel):
 
 class PasswordConfirmRequest(BaseModel):
     password: Optional[SecretStr] = None
-    otp: Optional[str] = None   
+ 
 
 class PasswordUpdateRequest(BaseModel):
     new_password: SecretStr

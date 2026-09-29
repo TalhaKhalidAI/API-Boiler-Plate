@@ -105,12 +105,22 @@ class AdminService:
         user_id: int,
         password: Optional[str],
         current_user: Dict[str, Any],
+        otp: str = None,
     ):
         repo = UserRepository(self.db)
 
         current_user_id = current_user.get("id")
         current_user_role = current_user.get("role")
         current_user_perms = self._normalize_permissions(current_user.get("permissions", {}))
+
+        actor = await repo.get_by_id(current_user_id)
+        if actor and actor.mfa_enabled:
+            if not otp:
+                raise MFARequiredError(method=actor.mfa_method or "totp")
+            ok = await MFAService(self.db)._verify_totp_no_replay(actor, otp)
+            if not ok:
+                logger.warning(f"Step-up MFA failed: actor={current_user_id} action=disable_account")
+                raise InvalidMFACodeError()
 
         target_user = await repo.get_by_id(user_id)
         if not target_user:
@@ -175,6 +185,7 @@ class AdminService:
         user_id: int,
         password: Optional[str],
         current_user: Dict[str, Any],
+        otp: str = None,
     ):
         repo = UserRepository(self.db)
 
@@ -182,6 +193,16 @@ class AdminService:
         cur_role = current_user.get("role")
         cur_perms = self._normalize_permissions(current_user.get("permissions", {}))
         is_slt_token = self._is_slt(current_user)
+
+        if not is_slt_token:
+            actor = await repo.get_by_id(cur_id)
+            if actor and actor.mfa_enabled:
+                if not otp:
+                    raise MFARequiredError(method=actor.mfa_method or "totp")
+                ok = await MFAService(self.db)._verify_totp_no_replay(actor, otp)
+                if not ok:
+                    logger.warning(f"Step-up MFA failed: actor={cur_id} action=enable_account")
+                    raise InvalidMFACodeError()
 
         is_admin = cur_role == "admin"
         is_self = cur_id == user_id
@@ -266,11 +287,21 @@ class AdminService:
         # cases that could.
         raise PermissionDeniedError("You don't have permission to enable this account")
 
-    async def temp_token_maker(self, user_id: int, current_user: Dict[str, Any], db, cookie_login: bool, restore_passwd: bool):
+    async def temp_token_maker(self, user_id: int, current_user: Dict[str, Any], db, cookie_login: bool, restore_passwd: bool, otp: str = None):
         repo = UserRepository(self.db)
 
         if current_user.get("role") != "admin":
             raise PermissionDeniedError("Only admin can access this")
+
+        cur_id = current_user.get("id")
+        actor = await repo.get_by_id(cur_id)
+        if actor and actor.mfa_enabled:
+            if not otp:
+                raise MFARequiredError(method=actor.mfa_method or "totp")
+            ok = await MFAService(self.db)._verify_totp_no_replay(actor, otp)
+            if not ok:
+                logger.warning(f"Step-up MFA failed: actor={cur_id} action=temp_token_maker")
+                raise InvalidMFACodeError()
 
         target_user = await repo.get_by_id(user_id)
         if not target_user:
@@ -316,12 +347,23 @@ class AdminService:
             "expires_in_minutes": 2,
         }
 
-    async def reset_auto_kill(self, current_user: Dict[str, Any]):
+    async def reset_auto_kill(self, current_user: Dict[str, Any], otp: str = None):
         perms = self._normalize_permissions(current_user.get("permissions", {}))
         is_admin = current_user.get("role") == "admin"
         has_permission = perms.get("admin.system.kill_switch", False)
         if not (is_admin or has_permission):
             raise PermissionDeniedError("Only administrators can reset the safety mode")
+
+        cur_id = current_user.get("id")
+        repo = UserRepository(self.db)
+        actor = await repo.get_by_id(cur_id)
+        if actor and actor.mfa_enabled:
+            if not otp:
+                raise MFARequiredError(method=actor.mfa_method or "totp")
+            ok = await MFAService(self.db)._verify_totp_no_replay(actor, otp)
+            if not ok:
+                logger.warning(f"Step-up MFA failed: actor={cur_id} action=reset_auto_kill")
+                raise InvalidMFACodeError()
 
         # FIX: actually delete the Redis key so auto-kill disengages
         try:
@@ -383,7 +425,7 @@ class AdminService:
 
         raise PermissionDeniedError("You don't have permission to delete this account")
 
-    async def restore_account(self, user_id: int, current_user: Dict[str, Any]):
+    async def restore_account(self, user_id: int, current_user: Dict[str, Any], otp: str = None):
         repo = UserRepository(self.db)
 
         cur_role = current_user.get("role")
@@ -391,6 +433,16 @@ class AdminService:
         cur_perms = self._normalize_permissions(current_user.get("permissions", {}))
         is_slt_token = self._is_slt(current_user)
         is_admin = cur_role == "admin"
+
+        if not is_slt_token:
+            actor = await repo.get_by_id(cur_id)
+            if actor and actor.mfa_enabled:
+                if not otp:
+                    raise MFARequiredError(method=actor.mfa_method or "totp")
+                ok = await MFAService(self.db)._verify_totp_no_replay(actor, otp)
+                if not ok:
+                    logger.warning(f"Step-up MFA failed: actor={cur_id} action=restore_account")
+                    raise InvalidMFACodeError()
 
         has_restore_permission = cur_perms.get("admin.users.restore", False)
         has_promote_permission = cur_perms.get("admin.users.promote", False)
