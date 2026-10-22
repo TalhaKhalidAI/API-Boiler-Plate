@@ -44,6 +44,8 @@ from App.middleware.gzip_response_middleware import GZipResponseMiddleware
 from redis.exceptions import RedisError
 from App.middleware.kill_switch_middleware import  engage_auto_kill
 import uvicorn
+from App.middleware.idempotency_middleware import IdempotencyMiddleware
+
 logger = get_core_logger(__name__)
 
 
@@ -383,7 +385,7 @@ app.add_middleware(
     default_limit=settings.RATE_LIMIT_DEFAULT or "100/minute",
 )
 app.add_middleware(KillSwitchMiddleware, recovery_seconds=60)
-
+app.add_middleware(IdempotencyMiddleware)
 ALLOWED_ORIGINS = [
     o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
 ]
