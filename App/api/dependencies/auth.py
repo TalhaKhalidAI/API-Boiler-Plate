@@ -349,14 +349,17 @@ async def get_current_user(
     user = await repo.get_by_id(payload["user_id"])
 
     if not user:
-        logger.warning(f"User not found for ID: {payload['user_id']}")
+        logger.warning(f"User not found for ID in token: {payload['user_id']}")
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authenticated user no longer exists",
         )
 
     if user.is_deleted:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Account has been deleted",
+        )
 
     if user.disabled or not user.is_active:
         logger.warning(f"Inactive user tried to authenticate: {user.id}")

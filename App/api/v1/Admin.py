@@ -343,10 +343,11 @@ async def reset_auto_kill(
     request: Request,
     current_user: Dict[str, Any] = Depends(require_permission(required_permissions=[Permission.ADMIN_SYSTEM_KILL_SWITCH],mode="any",bypass_admin=False,additional_dependency=get_current_user)),
     otp: Optional[str] = Query(None, description="MFA OTP/TOTP (required if admin has MFA enabled)"),
+    db: AsyncSession = Depends(get_db),
 ):
     req_id = getattr(request.state, "request_id", "-")
     try:
-        service = AdminService(None)
+        service = AdminService(db)
         result = await service.reset_auto_kill(current_user, otp=otp)
         logger.info(f"[{req_id}] Safety mode reset by admin: {current_user.get('email')}")
         return result

@@ -70,15 +70,21 @@ class UserRepository:
 
     async def get_by_email(self, email: str) -> Optional[UserModel]:
         result = await self.session.execute(
-            select(UserModel).where(UserModel.email == email)
+            select(UserModel)
+            .where(UserModel.email == email)
+            .where(UserModel.is_deleted == False)
+            .order_by(UserModel.id.asc())
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def get_by_name(self, name: str) -> Optional[UserModel]:
         result = await self.session.execute(
-            select(UserModel).where(UserModel.name == name)
+            select(UserModel)
+            .where(UserModel.name == name)
+            .where(UserModel.is_deleted == False)
+            .order_by(UserModel.id.asc())
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def create(self, user_data: Dict[str, Any]) -> UserModel:
         """Create a new user. Does NOT commit.

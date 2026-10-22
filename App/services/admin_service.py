@@ -11,6 +11,7 @@ from App.repository.UserRepository import UserRepository
 from App.core.LoggingInit import get_core_logger
 from App.core.exceptions import InfrastructureError,MFARequiredError,InvalidMFACodeError
 from App.services.mfa_service import MFAService
+from App.schemas.otp_purposes import OTPPurpose
 logger=get_core_logger(__name__)
 
 class AdminService:
@@ -117,7 +118,7 @@ class AdminService:
         if actor and actor.mfa_enabled:
             if not otp:
                 raise MFARequiredError(method=actor.mfa_method or "totp")
-            ok = await MFAService(self.db)._verify_totp_no_replay(actor, otp)
+            ok = await MFAService(self.db).verify_code_for_actor(actor, otp, purpose=OTPPurpose.DISABLE_ACCOUNT.value)
             if not ok:
                 logger.warning(f"Step-up MFA failed: actor={current_user_id} action=disable_account")
                 raise InvalidMFACodeError()
@@ -199,7 +200,7 @@ class AdminService:
             if actor and actor.mfa_enabled:
                 if not otp:
                     raise MFARequiredError(method=actor.mfa_method or "totp")
-                ok = await MFAService(self.db)._verify_totp_no_replay(actor, otp)
+                ok = await MFAService(self.db).verify_code_for_actor(actor, otp, purpose=OTPPurpose.ENABLE_ACCOUNT.value)
                 if not ok:
                     logger.warning(f"Step-up MFA failed: actor={cur_id} action=enable_account")
                     raise InvalidMFACodeError()
@@ -298,7 +299,7 @@ class AdminService:
         if actor and actor.mfa_enabled:
             if not otp:
                 raise MFARequiredError(method=actor.mfa_method or "totp")
-            ok = await MFAService(self.db)._verify_totp_no_replay(actor, otp)
+            ok = await MFAService(self.db).verify_code_for_actor(actor, otp, purpose=OTPPurpose.TEMP_TOKEN_MAKER.value)
             if not ok:
                 logger.warning(f"Step-up MFA failed: actor={cur_id} action=temp_token_maker")
                 raise InvalidMFACodeError()
@@ -360,7 +361,7 @@ class AdminService:
         if actor and actor.mfa_enabled:
             if not otp:
                 raise MFARequiredError(method=actor.mfa_method or "totp")
-            ok = await MFAService(self.db)._verify_totp_no_replay(actor, otp)
+            ok = await MFAService(self.db).verify_code_for_actor(actor, otp, purpose=OTPPurpose.RESET_AUTO_KILL.value)
             if not ok:
                 logger.warning(f"Step-up MFA failed: actor={cur_id} action=reset_auto_kill")
                 raise InvalidMFACodeError()
@@ -439,7 +440,7 @@ class AdminService:
             if actor and actor.mfa_enabled:
                 if not otp:
                     raise MFARequiredError(method=actor.mfa_method or "totp")
-                ok = await MFAService(self.db)._verify_totp_no_replay(actor, otp)
+                ok = await MFAService(self.db).verify_code_for_actor(actor, otp, purpose=OTPPurpose.RESTORE_ACCOUNT.value)
                 if not ok:
                     logger.warning(f"Step-up MFA failed: actor={cur_id} action=restore_account")
                     raise InvalidMFACodeError()
@@ -565,7 +566,7 @@ class AdminService:
             if not otp:
                 raise MFARequiredError(method=actor.mfa_method or "totp")
  
-            ok = await MFAService(self.db)._verify_totp_no_replay(actor, otp)
+            ok = await MFAService(self.db).verify_code_for_actor(actor, otp, purpose=OTPPurpose.UPDATE_PASSWORD.value)
             if not ok:
                 logger.warning(
                     f"Step-up MFA failed: actor={cur_id} target={user_id} "

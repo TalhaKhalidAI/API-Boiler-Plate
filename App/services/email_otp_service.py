@@ -55,4 +55,13 @@ def _subject_for(purpose: str) -> str:
         "password_reset": "Your password reset code",
         "login_2fa": "Your login code",
         "email_change": "Your email change code",
-    }.get(purpose, "Your code")
+        "mfa_disable": "Your code to disable MFA",
+        "mfa_enroll_email": "Confirm email MFA setup",
+        "mfa_stepup": "Your security authorization code",
+        "enable_account": "Authorize account enable",
+        "disable_account": "Authorize account disable",
+        "temp_token_maker": "Authorize temporary token creation",
+        "reset_auto_kill": "Authorize safety mode (kill switch) reset",
+        "update_password": "Authorize password change",
+        "restore_account": "Authorize account restore",
+    }.get(purpose, "Your verification code")

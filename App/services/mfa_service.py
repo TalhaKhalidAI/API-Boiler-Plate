@@ -23,6 +23,7 @@ _PURPOSE_ENROLL = "mfa_enroll_email"
 _PURPOSE_LOGIN = "login_2fa"
 _PURPOSE_DISABLE = "mfa_disable"
 _TOTP_REPLAY_TTL = 120 
+
 def mask_email(email: str) -> str:
     """t***@example.com — never echo the full email back."""
     local, _, domain = email.partition("@")
@@ -173,15 +174,7 @@ class MFAService:
         - TOTP: pyotp against stored secret + replay guard
         - Email: check against Redis OTP for purpose='login_2fa'
         """
-        method = user.mfa_method or "totp"
-
-        if method == "totp":
-            return await self._verify_totp_no_replay(user, code)   # ← CHANGE
-
-        if method == "email":
-            return await verify_otp(user.email, _PURPOSE_LOGIN, code)
-
-        return False
+        return await self.verify_code_for_actor(user, code, purpose=_PURPOSE_LOGIN)
 
     # ==================================================================
     # Disable
@@ -198,22 +191,9 @@ class MFAService:
         if not code:
             raise ValidationError("Current code required to disable")
 
-        method = user.mfa_method or "totp"
-
-        if method == "totp":
-            if not user.mfa_secret_encrypted:
-                raise ValidationError("MFA secret missing — cannot verify")
-            secret = decrypt_secret(user.mfa_secret_encrypted)
-            if not pyotp.TOTP(secret).verify(code, valid_window=1):
-                raise ValidationError("Invalid MFA code")
-
-        elif method == "email":
-            from App.store.otp_store import verify_otp
-            if not await verify_otp(user.email, _PURPOSE_DISABLE, code):
-                raise ValidationError("Invalid MFA code")
-
-        else:
-            raise ValidationError(f"Unknown MFA method: {method}")
+        ok = await self.verify_code_for_actor(user, code, purpose=_PURPOSE_DISABLE)
+        if not ok:
+            raise ValidationError("Invalid MFA code")
 
         target = await UserRepository(self.db).get_by_id(user.id)
         target.mfa_enabled = False
@@ -338,8 +318,18 @@ class MFAService:
             "password_reset": "Your password reset code",
             "email_change": "Confirm your email change",
             "verification": "Your verification code",
+            "mfa_disable": "Your code to disable MFA",
+            "mfa_enroll_email": "Confirm email MFA setup",
+            "mfa_stepup": "Your security authorization code",
+            "login_2fa": "Your login code",
+            "enable_account": "Authorize account enable",
+            "disable_account": "Authorize account disable",
+            "temp_token_maker": "Authorize temporary token creation",
+            "reset_auto_kill": "Authorize safety mode (kill switch) reset",
+            "update_password": "Authorize password change",
+            "restore_account": "Authorize account restore",
         }
-        subject = subjects.get(purpose, "Your code")
+        subject = subjects.get(purpose, "Your verification code")
 
         sent = await self._generate_and_send_otp(
             user=user,
@@ -356,7 +346,7 @@ class MFAService:
             "expires_in": settings.EMAIL_OTP_TTL_SECONDS,
         }
 
-    async def _verify_totp_no_replay(self, user, code: str) -> bool:
+    async def _verify_totp_code(self, user, code: str) -> bool:
         """
         Verify a TOTP code AND ensure it hasn't been used before.
 
@@ -387,3 +377,20 @@ class MFAService:
             logger.warning(f"TOTP concurrent use: user={user.id}")
             return False
         return True
+
+    async def verify_code_for_actor(self, actor, code: str, purpose: str = "mfa_stepup") -> bool:
+        """
+        Step-up dispatcher. Picks the method from the ACTOR'S OWN mfa_method.
+        - TOTP  → pyotp + replay guard
+        - Email → Redis OTP under the given purpose (with fallback to mfa_stepup)
+        """
+        method = actor.mfa_method or "totp"
+        if method == "totp":
+            return await self._verify_totp_code(actor, code)
+        if method == "email":
+            if await verify_otp(actor.email, purpose, code):
+                return True
+            if purpose != "mfa_stepup" and await verify_otp(actor.email, "mfa_stepup", code):
+                return True
+            return False
+        return False
